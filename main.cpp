@@ -13,7 +13,7 @@
 static std::default_random_engine engine[32];
 static std::uniform_real_distribution<double> uniform(0, 1);
 
-const double eps = 1e-10;
+const double eps = 1e-5;
 
 double sqr(double x) { return x * x; };
 
