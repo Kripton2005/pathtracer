@@ -1,7 +1,5 @@
 #define _CRT_SECURE_NO_WARNINGS 1
 #include <cmath>
-#include <iomanip>
-#include <iostream>
 #include <random>
 #include <vector>
 
@@ -94,11 +92,7 @@ public:
   // t>=0 the distance between the ray origin and P (i.e., the parameter along
   // the ray) and the unit normal N
   bool intersect(const Ray &ray, Vector &P, double &t, Vector &N) const {
-    // TODO (lab 1) : compute the intersection (just true/false at the begining
-    // of lab 1, then P, t and N as well)
     double delta = sqr(dot(ray.u, ray.O - C)) - ((ray.O - C).norm2() - sqr(R));
-    // std::cout << std::fixed << std::setprecision(10) << delta << " " << R
-    //           << " fuck this\n";
     if (delta < -eps)
       return false;
     if (-eps < delta && delta < eps)
@@ -151,9 +145,6 @@ public:
   // the object within the std::vector objects in object_id
   bool intersect(const Ray &ray, Vector &P, double &t, Vector &N,
                  int &object_id) const {
-    // TODO (lab 1): iterate through the objects and check the intersections
-    // with all of them, and keep the closest intersection, i.e., the one if
-    // smallest positive value of t
     t = 2e9;
     object_id = -1;
     Vector P_func, N_func;
@@ -176,10 +167,6 @@ public:
 
     if (recursion_depth >= max_light_bounce)
       return Vector(0, 0, 0);
-
-    // TODO (lab 1) : if intersect with ray, use the returned information to
-    // compute the color ; otherwise black in lab 1, the color only includes
-    // direct lighting with shadows
 
     Vector P, N;
     double t;
@@ -247,7 +234,7 @@ int main() {
   scene.light_position = Vector(-10, 20, 40);
   scene.light_intensity = 3E7;
   scene.fov = 60 * M_PI / 180.;
-  scene.gamma = 2.2; // TODO (lab 1) : play with gamma ; typically, gamma = 2.2
+  scene.gamma = 2.2;
   scene.max_light_bounce = 5;
 
   scene.addObject(&center_sphere);
@@ -266,8 +253,6 @@ int main() {
     for (int j = 0; j < W; j++) {
       Vector color;
 
-      // TODO (lab 1) : correct ray_direction so that it goes through each pixel
-      // (j, i)
       Vector ray_direction = Vector(j - W / 2.0 + 0.5, H / 2.0 - i - 0.5,
                                     -W / (2 * tan(scene.fov / 2)));
       ray_direction.normalize();
