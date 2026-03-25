@@ -13,7 +13,7 @@
 static std::default_random_engine engine[32];
 static std::uniform_real_distribution<double> uniform(0, 1);
 
-const double eps = 1e-5;
+const double eps = 1e-10;
 
 double sqr(double x) { return x * x; };
 
@@ -99,13 +99,9 @@ public:
       delta = 0;
     double t1 = dot(ray.u, C - ray.O) + sqrt(delta);
     double t2 = dot(ray.u, C - ray.O) - sqrt(delta);
-    if (t1 < -eps)
+    if (t1 < eps)
       return false;
-    if (-eps < t1 && t1 < eps)
-      t1 = 0;
-    if (-eps < t2 && t2 < eps)
-      t2 = 0;
-    if (t2 > -eps)
+    if (t2 > eps)
       t = t2;
     else
       t = t1;
