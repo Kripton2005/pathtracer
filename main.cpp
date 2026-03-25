@@ -194,7 +194,15 @@ public:
       } // else
 
       // test if there is a shadow by sending a new ray
-      // TODO
+      P = P + eps * N;
+      Ray new_ray(P, (light_position - P) / (light_position - P).norm());
+      Vector P1, N1;
+      int object_id1;
+      double t1;
+      if (intersect(new_ray, P1, t1, N1, object_id1)) {
+        if ((P1 - P).norm2() < (light_position - P).norm2()) // shadow!!!
+          return Vector(0, 0, 0);
+      }
       // if there is no shadow, compute the formula with dot products etc.
       return light_intensity / (4 * M_PI * (light_position - P).norm2()) *
              (objects[object_id]->albedo / M_PI) *
