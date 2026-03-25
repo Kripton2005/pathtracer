@@ -67,6 +67,7 @@ public:
   Ray(const Vector &origin, const Vector &unit_direction)
       : O(origin), u(unit_direction) {};
   Vector O, u;
+  double n;
 };
 
 class Object {
@@ -79,6 +80,7 @@ public:
 
   Vector albedo;
   bool mirror, transparent;
+  double n;
 };
 
 class Sphere : public Object {
@@ -186,16 +188,22 @@ public:
       if (objects[object_id]->mirror) {
         // return getColor in the reflected direction, with recursion_depth+1
         // (recursively)
-        return getColor(Ray(P, ray.u - 2 * dot(ray.u, N) * N),
-                        recursion_depth - 1);
+        Vector new_vec = ray.u - 2 * dot(ray.u, N) * N;
+        new_vec.normalize();
+        return getColor(Ray(P + eps * N, new_vec), recursion_depth + 1);
       } // else
 
-      if (objects[object_id]->transparent) { // optional
-
+      if (objects[object_id]->transparent) {
         // return getColor in the refraction direction, with recursion_depth+1
         // (recursively)
-        return getColor(Ray(P, ray.u - 2 * dot(ray.u, N) * N),
-                        recursion_depth + 1);
+        // TODO
+        /*Vector new_vec_t = 1.0003 / 1.53 * (ray.u - dot(ray.u, N) * N);
+        Vector new_vec_n = -1 * N *
+                           sqrt(1 - sqr(ray.n - objects[object_id]->n) *
+                                        (1 - sqr(dot(ray.u, N))));
+        Vector new_vec = new_vec_t + new_vec_n;
+        new_vec.normalize();
+        return getColor(Ray(P + eps * N, new_vec), recursion_depth + 1);*/
       } // else
 
       // test if there is a shadow by sending a new ray
@@ -226,7 +234,7 @@ int main() {
     engine[i].seed(i);
   }
 
-  Sphere center_sphere(Vector(0, 0, 0), 10., Vector(0.8, 0.8, 0.8));
+  Sphere center_sphere(Vector(0, 0, 0), 10., Vector(0.8, 0.8, 0.8), true);
   Sphere wall_left(Vector(-1000, 0, 0), 940, Vector(0.5, 0.8, 0.1));
   Sphere wall_right(Vector(1000, 0, 0), 940, Vector(0.9, 0.2, 0.3));
   Sphere wall_front(Vector(0, 0, -1000), 940, Vector(0.1, 0.6, 0.7));
@@ -284,7 +292,7 @@ int main() {
           std::max(0., 255. * std::pow(color[2] / 255., 1. / scene.gamma)));
     }
   }
-  stbi_write_png("image.png", W, H, 3, &image[0], 0);
+  stbi_write_png("lab1.png", W, H, 3, &image[0], 0);
 
   return 0;
 }
