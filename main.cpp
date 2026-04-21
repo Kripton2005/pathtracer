@@ -1,5 +1,6 @@
 #define _CRT_SECURE_NO_WARNINGS 1
 #include <cmath>
+#include <omp.h>
 #include <random>
 #include <vector>
 
@@ -167,6 +168,7 @@ class Scene {
         Vector P, N;
         double t;
         int object_id;
+        Vector direct_light;
         if (intersect(ray, P, t, N, object_id)) {
             if (objects[object_id]->mirror) {
                 // return getColor in the reflected direction, with
@@ -193,20 +195,53 @@ class Scene {
             Vector P1, N1;
             int object_id1;
             double t1;
+            bool shadow = 0;
             if (intersect(new_ray, P1, t1, N1, object_id1)) {
                 if ((P1 - P).norm2() <
-                    (light_position - P).norm2()) // shadow!!!
-                    return Vector(0, 0, 0);
+                    (light_position - P).norm2()) { // shadow!!!
+                    direct_light = Vector(0, 0, 0);
+                    shadow = true;
+                }
             }
             // if there is no shadow, compute the formula with dot products etc.
-            return light_intensity / (4 * M_PI * (light_position - P).norm2()) *
-                   (objects[object_id]->albedo / M_PI) *
-                   std::max(0.0, dot(N, (light_position - P) /
-                                            (light_position - P).norm()));
-            // TODO (lab 2) : add indirect lighting component with a recursive
+            if (!shadow)
+                direct_light =
+                    light_intensity /
+                    (4 * M_PI * (light_position - P).norm2()) *
+                    (objects[object_id]->albedo / M_PI) *
+                    std::max(0.0, dot(N, (light_position - P) /
+                                             (light_position - P).norm()));
+            // (lab 2) : add indirect lighting component with a recursive
             // call
+            int tid = omp_get_thread_num();
+            double r1 = uniform(engine[tid]);
+            double r2 = uniform(engine[tid]);
+            double x = cos(2 * M_PI * r1) * sqrt(1 - r2);
+            double y = sin(2 * M_PI * r1) * sqrt(1 - r2);
+            double z = sqrt(r2);
+            Vector T1;
+            if (abs(N.data[0]) < abs(N.data[1]) + eps &&
+                abs(N.data[0]) < abs(N.data[2]) + eps)
+                T1 = Vector(0, -N.data[2], N.data[1]);
+            else if (abs(N.data[1]) < abs(N.data[0]) + eps &&
+                     abs(N.data[1]) < abs(N.data[2]) + eps)
+                T1 = Vector(N.data[2], 0, -N.data[0]);
+            else if (abs(N.data[2]) < abs(N.data[0]) + eps &&
+                     abs(N.data[2]) < abs(N.data[1]) + eps)
+                T1 = Vector(-N.data[1], N.data[0], 0);
+            else
+                exit(1);
+            T1.normalize();
+            Vector T2 = cross(N, T1);
+            Vector dir = x * T1 + y * T2 + z * N;
+            dir.normalize();
+            Vector next_color = getColor(Ray(P, dir), recursion_depth + 1);
+            Vector indirect_light =
+                Vector(objects[object_id]->albedo.data[0] * next_color.data[0],
+                       objects[object_id]->albedo.data[1] * next_color.data[1],
+                       objects[object_id]->albedo.data[2] * next_color.data[2]);
+            return direct_light + indirect_light;
         }
-
         return Vector(0, 0, 0);
     }
 
@@ -257,19 +292,34 @@ int main() {
         for (int j = 0; j < W; j++) {
             Vector color;
 
-            Vector ray_direction = Vector(j - W / 2.0 + 0.5, H / 2.0 - i - 0.5,
-                                          -W / (2 * tan(scene.fov / 2)));
-            ray_direction.normalize();
-            Ray ray(scene.camera_center, ray_direction);
+            double miu_x = j - W / 2.0 + 0.5;
+            double miu_y = H / 2.0 - i - 0.5;
+            double miu_z = -W / (2 * tan(scene.fov / 2));
 
-            // TODO (lab 2) : add Monte Carlo / averaging of random ray
+            // (lab 2) : add Monte Carlo / averaging of random ray
             // contributions here
+            int N = 200;
+            double sigma = 0.5;
+            int tid = omp_get_thread_num();
+            for (int l = 0; l < N; l++) {
+                double r1 = uniform(engine[tid]);
+                double r2 = uniform(engine[tid]);
+
+                Vector ray_direction = Vector(
+                    miu_x + sigma * sqrt(-2 * log(r1)) * cos(2 * M_PI * r2),
+                    miu_y + sigma * sqrt(-2 * log(r1)) * sin(2 * M_PI * r2),
+                    miu_z);
+                ray_direction.normalize();
+                Ray ray(scene.camera_center, ray_direction);
+
+                color = color + scene.getColor(ray, 0);
+            }
+            color = color / N;
             // TODO (lab 2) : add antialiasing by altering the ray_direction
             // here
+
             // TODO (lab 2) : add depth of field effect by altering the ray
             // origin (and direction) here
-
-            color = scene.getColor(ray, 0);
 
             image[(i * W + j) * 3 + 0] =
                 std::min(255., std::max(0., 255. * std::pow(color[0] / 255.,
@@ -282,7 +332,7 @@ int main() {
                                                             1. / scene.gamma)));
         }
     }
-    stbi_write_png("lab1.png", W, H, 3, &image[0], 0);
+    stbi_write_png("lab2.png", W, H, 3, &image[0], 0);
 
     return 0;
 }
