@@ -1,4 +1,4 @@
-You have to have the `stb` headers inside `\usr\local\include\stb` for working flawlessly
+This project uses the [stb library](https://github.com/nothings/stb) and is therefore licensed accordingly.
 
 ```
 make
