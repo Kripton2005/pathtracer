@@ -1,5 +1,5 @@
 CXX = g++
-CXXFLAGS = -O3 -Wall -I.
+CXXFLAGS = -O3 -Wall -I. -fopenmp
 # This finds all .cpp and .c files in your folder
 SRCS = $(wildcard *.cpp) $(wildcard *.c)
 # This turns the list of source files into a list of .o files
