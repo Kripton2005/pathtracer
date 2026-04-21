@@ -11,7 +11,7 @@
 #define M_PI 3.14159265358979323856
 #endif
 
-static std::default_random_engine engine[32];
+static std::default_random_engine engine[256];
 static std::uniform_real_distribution<double> uniform(0, 1);
 
 const double eps = 1e-10;
@@ -71,22 +71,26 @@ class Ray {
 
 class Object {
   public:
-    Object(const Vector &albedo, bool mirror = false, bool transparent = false)
-        : albedo(albedo), mirror(mirror), transparent(transparent){};
+    Object(const Vector &albedo, bool mirror = false, bool transparent = false,
+           bool is_light = false, double n = 1.5) // by default glass
+        : albedo(albedo), mirror(mirror), transparent(transparent),
+          is_light(is_light), n(n){};
 
     virtual bool intersect(const Ray &ray, Vector &P, double &t,
                            Vector &N) const = 0;
 
     Vector albedo;
-    bool mirror, transparent;
+    bool mirror, transparent, is_light;
     double n;
 };
 
 class Sphere : public Object {
   public:
     Sphere(const Vector &center, double radius, const Vector &albedo,
-           bool mirror = false, bool transparent = false)
-        : ::Object(albedo, mirror, transparent), C(center), R(radius){};
+           bool mirror = false, bool transparent = false, bool is_light = false,
+           double n = 1.5, bool invert_normals = false)
+        : ::Object(albedo, mirror, transparent, is_light, n), C(center),
+          R(radius), invert_normals(invert_normals){};
 
     // returns true iif there is an intersection between the ray and the sphere
     // if there is an intersection, also computes the point of intersection P,
@@ -110,11 +114,14 @@ class Sphere : public Object {
         P = ray.O + t * ray.u;
         N = P - C;
         N.normalize();
+        if (invert_normals)
+            N = N * -1.0;
         return true;
     }
 
     Vector C;
     double R;
+    bool invert_normals;
 };
 
 // I will provide you with an obj mesh loader (labs 3 and 4)
@@ -160,7 +167,8 @@ class Scene {
     }
 
     // return the radiance (color) along ray
-    Vector getColor(const Ray &ray, int recursion_depth) {
+    Vector getColor(const Ray &ray, int recursion_depth,
+                    bool last_bounce_was_diffuse = false) {
 
         if (recursion_depth >= max_light_bounce)
             return Vector(0, 0, 0);
@@ -170,35 +178,109 @@ class Scene {
         int object_id;
         Vector direct_light;
         if (intersect(ray, P, t, N, object_id)) {
+            if (objects[object_id]->is_light) {
+                if (last_bounce_was_diffuse) {
+                    return Vector(0.0, 0.0,
+                                  0.0); // we don't want to count light twice
+                }
+                double r = 5.0; // sphere radius, TODO remove hardcoding
+                double area = 4.0 * M_PI * r * r;
+                double emission = light_intensity / (area * M_PI);
+                return Vector(1, 1, 1) *
+                       emission; // I'm sure it's a smart formula
+            }
             if (objects[object_id]->mirror) {
                 // return getColor in the reflected direction, with
                 // recursion_depth+1 (recursively)
                 Vector new_vec = ray.u - 2 * dot(ray.u, N) * N;
                 new_vec.normalize();
                 return getColor(Ray(P + eps * N, new_vec), recursion_depth + 1);
-            } // else
+            }
 
-            if (objects[object_id]->transparent) {
+            if (objects[object_id]
+                    ->transparent) { // TODO for now it's just normal glass
                 // return getColor in the refraction direction, with
                 // recursion_depth+1 (recursively)
-                // TODO
-                /*Vector new_vec_t = 1.0003 / 1.53 * (ray.u - dot(ray.u, N) *
-                N); Vector new_vec_n = -1 * N * sqrt(1 - sqr(ray.n -
-                objects[object_id]->n) * (1 - sqr(dot(ray.u, N)))); Vector
-                new_vec = new_vec_t + new_vec_n; new_vec.normalize(); return
-                getColor(Ray(P + eps * N, new_vec), recursion_depth + 1);*/
-            } // else
+                double n1 = 1.0; // air
+                double n2 =
+                    objects[object_id]->n; // the object's refraction index
+
+                Vector N_ref = N;
+                double cosi = dot(ray.u, N);
+
+                if (cosi > 0) { // acute angle, ray is coming out of the glass
+                    N_ref = N * -1.0;  // normal now points inside
+                    std::swap(n1, n2); // from glass to air
+                } else {
+                    // ray is coming in the glass
+                    cosi = -cosi; // real cos of incidence angle
+                }
+
+                double n = n1 / n2;
+                double sin2_r = n * n * (1.0 - cosi * cosi);
+
+                if (sin2_r > 1.0) { // total reflection
+                    Vector ref =
+                        ray.u +
+                        2 * cosi * N_ref; // the - from the reflection formula
+                                          // above is embedded in cosi
+                    ref.normalize();
+
+                    // offset on the same side
+                    return getColor(Ray(P + eps * N_ref, ref),
+                                    recursion_depth + 1);
+                } else { // refracts
+                    // ADDITION: Fresnel law
+                    double k0 = sqr((n1 - n2) / (n1 + n2));
+                    double R = k0 + (1.0 - k0) * std::pow(1.0 - cosi, 5.0);
+                    int tid = omp_get_thread_num();
+                    if (uniform(engine[tid]) < R) { // reflect
+                        // same code as above
+                        Vector ref = ray.u + 2 * cosi * N_ref;
+                        ref.normalize();
+
+                        return getColor(Ray(P + eps * N_ref, ref),
+                                        recursion_depth + 1);
+                    } else { // refract
+                        double cos_r = sqrt(1.0 - sin2_r);
+                        Vector ref = n * ray.u + (n * cosi - cos_r) * N_ref;
+                        ref.normalize();
+
+                        // offset on the opposite side
+                        return getColor(Ray(P - eps * N_ref, ref),
+                                        recursion_depth + 1);
+                    }
+                }
+            }
+
+            // ADDITION: if we treat the light source as spherical rather than a
+            // point, we need to shoot a ray at a random point on the sphere
+            int tid = omp_get_thread_num();
+            double r1 = uniform(engine[tid]);
+            double r2 = uniform(engine[tid]);
+
+            double z = 1.0 - 2.0 * r1;
+            double r_xy = sqrt(std::max(0.0, 1.0 - z * z));
+            double x = r_xy * cos(2 * M_PI * r2);
+            double y = r_xy * sin(2 * M_PI * r2);
+            double light_radius = 5.0; // TODO remove hardcoding
+            Vector random_light_point =
+                light_position + Vector(x, y, z) * light_radius;
 
             // test if there is a shadow by sending a new ray
             P = P + eps * N;
-            Ray new_ray(P, (light_position - P) / (light_position - P).norm());
+            Ray new_ray(P, (random_light_point - P) /
+                               (random_light_point - P).norm());
             Vector P1, N1;
             int object_id1;
             double t1;
             bool shadow = 0;
             if (intersect(new_ray, P1, t1, N1, object_id1)) {
-                if ((P1 - P).norm2() <
-                    (light_position - P).norm2()) { // shadow!!!
+                if (!objects[object_id1]->is_light &&
+                    (P1 - P).norm2() <
+                        (random_light_point - P)
+                            .norm2()) { // otherwise the light source would cast
+                                        // a shadow on itself. shadow!!!
                     direct_light = Vector(0, 0, 0);
                     shadow = true;
                 }
@@ -207,18 +289,17 @@ class Scene {
             if (!shadow)
                 direct_light =
                     light_intensity /
-                    (4 * M_PI * (light_position - P).norm2()) *
+                    (4 * M_PI * (random_light_point - P).norm2()) *
                     (objects[object_id]->albedo / M_PI) *
-                    std::max(0.0, dot(N, (light_position - P) /
-                                             (light_position - P).norm()));
+                    std::max(0.0, dot(N, (random_light_point - P) /
+                                             (random_light_point - P).norm()));
             // (lab 2) : add indirect lighting component with a recursive
             // call
-            int tid = omp_get_thread_num();
-            double r1 = uniform(engine[tid]);
-            double r2 = uniform(engine[tid]);
-            double x = cos(2 * M_PI * r1) * sqrt(1 - r2);
-            double y = sin(2 * M_PI * r1) * sqrt(1 - r2);
-            double z = sqrt(r2);
+            r1 = uniform(engine[tid]);
+            r2 = uniform(engine[tid]);
+            x = cos(2 * M_PI * r1) * sqrt(1 - r2);
+            y = sin(2 * M_PI * r1) * sqrt(1 - r2);
+            z = sqrt(r2);
             Vector T1;
             if (abs(N.data[0]) < abs(N.data[1]) + eps &&
                 abs(N.data[0]) < abs(N.data[2]) + eps)
@@ -235,7 +316,8 @@ class Scene {
             Vector T2 = cross(N, T1);
             Vector dir = x * T1 + y * T2 + z * N;
             dir.normalize();
-            Vector next_color = getColor(Ray(P, dir), recursion_depth + 1);
+            Vector next_color =
+                getColor(Ray(P, dir), recursion_depth + 1, true);
             Vector indirect_light =
                 Vector(objects[object_id]->albedo.data[0] * next_color.data[0],
                        objects[object_id]->albedo.data[1] * next_color.data[1],
@@ -248,6 +330,7 @@ class Scene {
     std::vector<const Object *> objects;
 
     Vector camera_center, light_position;
+    double focal_distance, lens_radius;
     double fov, gamma, light_intensity;
     int max_light_bounce;
 };
@@ -256,27 +339,56 @@ int main() {
     int W = 512;
     int H = 512;
 
-    for (int i = 0; i < 32; i++) {
+    for (int i = 0; i < 256; i++) {
         engine[i].seed(i);
     }
 
-    Sphere center_sphere(Vector(0, 0, 0), 10., Vector(0.8, 0.8, 0.8), true);
-    Sphere wall_left(Vector(-1000, 0, 0), 940, Vector(0.5, 0.8, 0.1));
-    Sphere wall_right(Vector(1000, 0, 0), 940, Vector(0.9, 0.2, 0.3));
-    Sphere wall_front(Vector(0, 0, -1000), 940, Vector(0.1, 0.6, 0.7));
-    Sphere wall_behind(Vector(0, 0, 1000), 940, Vector(0.8, 0.2, 0.9));
-    Sphere ceiling(Vector(0, 1000, 0), 940, Vector(0.3, 0.5, 0.3));
-    Sphere floor(Vector(0, -1000, 0), 990, Vector(0.6, 0.5, 0.7));
+    // these recreate the pic with all spheres aligned
+    // Sphere left_sphere(Vector(-20, 0, 0), 10., Vector(0.8, 0.8, 0.8), true,
+    //                    false);
+    // Sphere center_sphere(Vector(0, 0, 0), 10., Vector(0.8, 0.8, 0.8), false,
+    //                      true);
+    // Sphere right_sphere_outer(Vector(20, 0, 0), 10.0, Vector(0.8, 0.8, 0.8),
+    //                           false, true);
+    // Sphere right_sphere_inner(Vector(20, 0, 0), 9.5, Vector(0.8, 0.8, 0.8),
+    //                           false, true, false, 1.5, true);
+
+    Sphere left_sphere(Vector(-20, 0, 20), 10., Vector(0.8, 0.8, 0.8), true,
+                       false);
+    Sphere center_sphere(Vector(0, 0, 0), 10., Vector(0.8, 0.8, 0.8), false,
+                         true);
+    Sphere right_sphere_outer(Vector(20, 0, -20), 10.0, Vector(0.8, 0.8, 0.8),
+                              false, true);
+    Sphere right_sphere_inner(Vector(20, 0, -20), 9.5, Vector(0.8, 0.8, 0.8),
+                              false, true, false, 1.5, true);
+
+    Sphere wall_left(Vector(-1000, 0, 0), 940, Vector(0.8, 0.2, 0.8));
+    Sphere wall_right(Vector(1000, 0, 0), 940, Vector(0.8, 0.8, 0.2));
+    Sphere wall_front(Vector(0, 0, -1000), 940, Vector(0.2, 0.8, 0.8));
+    Sphere wall_behind(Vector(0, 0, 1000), 940, Vector(0.9, 0.6, 0.5));
+    Sphere ceiling(Vector(0, 1000, 0), 940, Vector(0.3, 0.5, 0.8));
+    Sphere floor(Vector(0, -1000, 0), 990, Vector(0.2, 0.3, 0.8));
+
+    Sphere light_sphere(Vector(-10, 25, -10), 5, Vector(1, 1, 1), false, true,
+                        true);
 
     Scene scene;
     scene.camera_center = Vector(0, 0, 55);
-    scene.light_position = Vector(-10, 20, 40);
-    scene.light_intensity = 3E7;
+    scene.light_position = Vector(-10, 25, -10);
+    scene.light_intensity = 1E7;
+    scene.focal_distance = 55.0;
+    scene.lens_radius = 1.5;
+
     scene.fov = 60 * M_PI / 180.;
     scene.gamma = 2.2;
-    scene.max_light_bounce = 5;
+    scene.max_light_bounce = 10;
 
+    scene.addObject(&light_sphere);
+
+    scene.addObject(&left_sphere);
     scene.addObject(&center_sphere);
+    scene.addObject(&right_sphere_outer);
+    scene.addObject(&right_sphere_inner); // ADDITION: the trick
 
     scene.addObject(&wall_left);
     scene.addObject(&wall_right);
@@ -287,22 +399,28 @@ int main() {
 
     std::vector<unsigned char> image(W * H * 3, 0);
 
+    int N = 5000;
+    double sigma = 0.5;
+
 #pragma omp parallel for schedule(dynamic, 1)
     for (int i = 0; i < H; i++) {
         for (int j = 0; j < W; j++) {
-            Vector color;
-
             double miu_x = j - W / 2.0 + 0.5;
             double miu_y = H / 2.0 - i - 0.5;
             double miu_z = -W / (2 * tan(scene.fov / 2));
 
             // (lab 2) : add Monte Carlo / averaging of random ray
             // contributions here
-            int N = 200;
-            double sigma = 0.5;
+            // (lab 2) : add antialiasing by altering the ray_direction
+            // here
+            // (lab 2) : add depth of field effect by altering the ray
+            // origin (and direction) here
+            Vector color(0, 0, 0);
             int tid = omp_get_thread_num();
             for (int l = 0; l < N; l++) {
                 double r1 = uniform(engine[tid]);
+                if (r1 < eps)
+                    r1 = eps;
                 double r2 = uniform(engine[tid]);
 
                 Vector ray_direction = Vector(
@@ -310,16 +428,28 @@ int main() {
                     miu_y + sigma * sqrt(-2 * log(r1)) * sin(2 * M_PI * r2),
                     miu_z);
                 ray_direction.normalize();
-                Ray ray(scene.camera_center, ray_direction);
 
-                color = color + scene.getColor(ray, 0);
+                // depth of field
+                double t_focal =
+                    scene.focal_distance / std::abs(ray_direction.data[2]);
+                Vector focal_point =
+                    scene.camera_center +
+                    ray_direction * t_focal; // the point on the focal plane
+                                             // that this ray hits
+
+                double r_lens = uniform(engine[tid]);
+                double theta_lens = uniform(engine[tid]) * 2 * M_PI;
+                double dx = scene.lens_radius * sqrt(r_lens) * cos(theta_lens);
+                double dy = scene.lens_radius * sqrt(r_lens) * sin(theta_lens);
+
+                // we shoot a ray from a random point on the lens
+                Vector new_origin = scene.camera_center + Vector(dx, dy, 0);
+                Vector final_dir = focal_point - new_origin;
+                final_dir.normalize();
+
+                color = color + scene.getColor(Ray(new_origin, final_dir), 0);
             }
             color = color / N;
-            // TODO (lab 2) : add antialiasing by altering the ray_direction
-            // here
-
-            // TODO (lab 2) : add depth of field effect by altering the ray
-            // origin (and direction) here
 
             image[(i * W + j) * 3 + 0] =
                 std::min(255., std::max(0., 255. * std::pow(color[0] / 255.,
