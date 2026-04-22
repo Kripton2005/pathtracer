@@ -303,8 +303,8 @@ class TriangleMesh : public Object {
     }
 
     void compute_bounding_box() {
-        B_max = -std::numeric_limits<double>::max() * Vector(1.0, 1.0, 1.0);
         B_min = std::numeric_limits<double>::max() * Vector(1.0, 1.0, 1.0);
+        B_max = -1 * B_min;
         for (auto vertex : vertices) {
             B_max.data[0] = std::max(B_max.data[0], vertex.data[0]);
             B_max.data[1] = std::max(B_max.data[1], vertex.data[1]);
@@ -325,15 +325,15 @@ class TriangleMesh : public Object {
 
         double tx_min = (B_min.data[0] - ray.O.data[0]) / ray.u.data[0];
         double tx_max = (B_max.data[0] - ray.O.data[0]) / ray.u.data[0];
-        if (ray.u.data[0] < -eps)
+        if (tx_max < tx_min - eps)
             std::swap(tx_min, tx_max);
         double ty_min = (B_min.data[1] - ray.O.data[1]) / ray.u.data[1];
         double ty_max = (B_max.data[1] - ray.O.data[1]) / ray.u.data[1];
-        if (ray.u.data[1] < -eps)
+        if (ty_max < ty_min - eps)
             std::swap(ty_min, ty_max);
         double tz_min = (B_min.data[2] - ray.O.data[2]) / ray.u.data[2];
         double tz_max = (B_max.data[2] - ray.O.data[2]) / ray.u.data[2];
-        if (ray.u.data[2] < -eps)
+        if (tz_max < tz_min - eps)
             std::swap(tz_min, tz_max);
         double t_min = std::max(tx_min, std::max(ty_min, tz_min));
         double t_max = std::min(tx_max, std::min(ty_max, tz_max));
@@ -361,6 +361,7 @@ class TriangleMesh : public Object {
                 found = true;
                 t = t_prime;
                 N = N_prime;
+                N.normalize();
                 P = alfa * A + beta * B + gamma * C;
             }
         }
@@ -616,7 +617,7 @@ int main() {
     TriangleMesh cat(Vector(1.0, 1.0, 1.0)); // white cat for now
 
     cat.readOBJ("cat/Models_F0202A090/cat.obj");
-    cat.scale_translate(0.5, Vector(0.0, -5.0, 0.0));
+    cat.scale_translate(0.6, Vector(0.0, -5.0, 0.0));
     cat.compute_bounding_box();
 
     Scene scene;
