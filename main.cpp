@@ -310,7 +310,32 @@ class TriangleMesh : public Object {
         // checking against the mesh bounding box lab 4 : recursively apply the
         // bounding-box test from a BVH datastructure
 
-        return false;
+        bool found = 0;
+        t = std::numeric_limits<double>::max();
+        for (auto triangle : indices) {
+            Vector A = vertices[triangle.vtx[0]];
+            Vector B = vertices[triangle.vtx[1]];
+            Vector C = vertices[triangle.vtx[2]];
+            Vector e1 = B - A;
+            Vector e2 = C - A;
+            Vector N_prime = cross(e1, e2);
+            double t_prime = dot(A - ray.O, N_prime) / dot(ray.u, N_prime);
+            double beta =
+                dot(e2, cross(A - ray.O, ray.u)) / dot(ray.u, N_prime);
+            double gamma =
+                -dot(e1, cross(A - ray.O, ray.u)) / dot(ray.u, N_prime);
+            double alfa = 1 - beta - gamma;
+            if (-eps < t_prime && t_prime < t &&
+                -eps < std::min(alfa, std::min(beta, gamma)) &&
+                std::max(alfa, std::max(beta, gamma)) < 1 + eps) {
+                found = true;
+                t = t_prime;
+                N = N_prime;
+                P = alfa * A + beta * B + gamma * C;
+            }
+        }
+
+        return found;
     }
 
     std::vector<TriangleIndices> indices;
@@ -332,7 +357,7 @@ class Scene {
     // the index of the object within the std::vector objects in object_id
     bool intersect(const Ray &ray, Vector &P, double &t, Vector &N,
                    int &object_id) const {
-        t = 2e9;
+        t = std::numeric_limits<double>::max();
         object_id = -1;
         Vector P_func, N_func;
         double t_func;
@@ -523,8 +548,8 @@ class Scene {
 };
 
 int main() {
-    int W = 512;
-    int H = 512;
+    int W = 128;
+    int H = 128;
 
     for (int i = 0; i < 256; i++) {
         engine[i].seed(i);
@@ -540,17 +565,15 @@ int main() {
     // Sphere right_sphere_inner(Vector(20, 0, 0), 9.5, Vector(1.0, 1.0, 1.0),
     //                           false, true, false, 1.5, true);
 
-    // Sphere left_sphere(Vector(-15, 0, 20), 6, Vector(1.0, 0.76, 0.33), true,
-    //                    false);
-    // left_sphere.velocity = Vector(0, 400, 0);
-    // Sphere center_sphere(Vector(0, 0, 0), 10., Vector(1.0, 0.0, 0.0), false,
-    //                      true);
-    // Sphere right_sphere_outer(Vector(20, 20, -10), 15.0,
-    // Vector(1.0, 1.0, 1.0),
-    //                           false, true);
-    // Sphere right_sphere_inner(Vector(20, 20, -10), 14.5,
-    // Vector(1.0, 1.0, 1.0),
-    //                           false, true, false, 1.5, true);
+    Sphere left_sphere(Vector(-15, 0, 20), 6, Vector(1.0, 0.76, 0.33), true,
+                       false);
+    left_sphere.velocity = Vector(0, 400, 0);
+    Sphere center_sphere(Vector(0, 0, 0), 10., Vector(1.0, 0.0, 0.0), false,
+                         true);
+    Sphere right_sphere_outer(Vector(20, 20, -10), 15.0, Vector(1.0, 1.0, 1.0),
+                              false, true);
+    Sphere right_sphere_inner(Vector(20, 20, -10), 14.5, Vector(1.0, 1.0, 1.0),
+                              false, true, false, 1.5, true);
 
     Sphere wall_left(Vector(-1000, 0, 0), 940, Vector(0.8, 0.2, 0.8));
     Sphere wall_right(Vector(1000, 0, 0), 940, Vector(0.8, 0.8, 0.2));
@@ -558,6 +581,10 @@ int main() {
     Sphere wall_behind(Vector(0, 0, 1000), 940, Vector(0.9, 0.6, 0.5));
     Sphere ceiling(Vector(0, 1000, 0), 940, Vector(0.3, 0.5, 0.8));
     Sphere floor(Vector(0, -1000, 0), 990, Vector(0.2, 0.3, 0.8));
+
+    TriangleMesh cat(Vector(1.0, 1.0, 1.0)); // white cat for now
+
+    cat.readOBJ("cat/Models_F0202A090/cat.obj");
 
     Scene scene;
     scene.camera_center = Vector(0, 0, 55);
@@ -567,11 +594,12 @@ int main() {
     scene.focal_distance = 55.0;
     scene.lens_radius = 0.3;
     scene.camera_shutter_time =
-        1.00 / 48; // from the cinematographic shutter formula Wikipedia
+        1.00 / 48; // from the cinematographic shutter formula on the shutter
+                   // speed Wikipedia
 
     scene.fov = 60 * M_PI / 180.;
     scene.gamma = 2.2;
-    scene.max_light_bounce = 10;
+    scene.max_light_bounce = 1;
 
     Sphere light_sphere(scene.light_position, scene.light_radius,
                         Vector(1.0, 1.0, 1.0), false, false, true);
@@ -582,6 +610,7 @@ int main() {
     // scene.addObject(&center_sphere);
     // scene.addObject(&right_sphere_outer);
     // scene.addObject(&right_sphere_inner); // ADDITION: the trick
+    scene.addObject(&cat);
 
     scene.addObject(&wall_left);
     scene.addObject(&wall_right);
@@ -592,7 +621,7 @@ int main() {
 
     std::vector<unsigned char> image(W * H * 3, 0);
 
-    int N = 50;
+    int N = 1;
     double sigma = 0.5;
 
 #pragma omp parallel for schedule(dynamic, 1)
