@@ -614,7 +614,7 @@ int main() {
     TriangleMesh cat(Vector(1.0, 1.0, 1.0), false, true); // transparent car!!
 
     cat.readOBJ("cat/Models_F0202A090/cat.obj");
-    cat.scale_translate(0.3, Vector(0.0, -5.0, 0.0));
+    cat.scale_translate(0.5, Vector(0.0, -5.0, 0.0));
     cat.compute_bounding_box();
 
     Scene scene;
