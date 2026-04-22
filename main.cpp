@@ -302,6 +302,19 @@ class TriangleMesh : public Object {
         }
     }
 
+    void compute_bounding_box() {
+        B_max = -std::numeric_limits<double>::max() * Vector(1.0, 1.0, 1.0);
+        B_min = std::numeric_limits<double>::max() * Vector(1.0, 1.0, 1.0);
+        for (auto vertex : vertices) {
+            B_max.data[0] = std::max(B_max.data[0], vertex.data[0]);
+            B_max.data[1] = std::max(B_max.data[1], vertex.data[1]);
+            B_max.data[2] = std::max(B_max.data[2], vertex.data[2]);
+            B_min.data[0] = std::min(B_min.data[0], vertex.data[0]);
+            B_min.data[1] = std::min(B_min.data[1], vertex.data[1]);
+            B_min.data[2] = std::min(B_min.data[2], vertex.data[2]);
+        }
+    }
+
     // TODO ray-mesh intersection (labs 3 and 4)
     bool intersect(const Ray &ray, Vector &P, double &t, Vector &N) const {
 
@@ -309,6 +322,23 @@ class TriangleMesh : public Object {
         // Moller-Trumbore algorithm lab 3 : once done, speed it up by first
         // checking against the mesh bounding box lab 4 : recursively apply the
         // bounding-box test from a BVH datastructure
+
+        double tx_min = (B_min.data[0] - ray.O.data[0]) / ray.u.data[0];
+        double tx_max = (B_max.data[0] - ray.O.data[0]) / ray.u.data[0];
+        if (ray.u.data[0] < -eps)
+            std::swap(tx_min, tx_max);
+        double ty_min = (B_min.data[1] - ray.O.data[1]) / ray.u.data[1];
+        double ty_max = (B_max.data[1] - ray.O.data[1]) / ray.u.data[1];
+        if (ray.u.data[1] < -eps)
+            std::swap(ty_min, ty_max);
+        double tz_min = (B_min.data[2] - ray.O.data[2]) / ray.u.data[2];
+        double tz_max = (B_max.data[2] - ray.O.data[2]) / ray.u.data[2];
+        if (ray.u.data[2] < -eps)
+            std::swap(tz_min, tz_max);
+        double t_min = std::max(tx_min, std::max(ty_min, tz_min));
+        double t_max = std::min(tx_max, std::min(ty_max, tz_max));
+        if (t_min > t_max + eps)
+            return false;
 
         bool found = 0;
         t = std::numeric_limits<double>::max();
@@ -343,6 +373,7 @@ class TriangleMesh : public Object {
     std::vector<Vector> normals;
     std::vector<Vector> uvs;
     std::vector<Vector> vertexcolors;
+    Vector B_min, B_max;
 };
 
 class Scene {
@@ -548,8 +579,8 @@ class Scene {
 };
 
 int main() {
-    int W = 128;
-    int H = 128;
+    int W = 512;
+    int H = 512;
 
     for (int i = 0; i < 256; i++) {
         engine[i].seed(i);
@@ -585,6 +616,8 @@ int main() {
     TriangleMesh cat(Vector(1.0, 1.0, 1.0)); // white cat for now
 
     cat.readOBJ("cat/Models_F0202A090/cat.obj");
+    cat.scale_translate(0.5, Vector(0.0, -5.0, 0.0));
+    cat.compute_bounding_box();
 
     Scene scene;
     scene.camera_center = Vector(0, 0, 55);
@@ -621,7 +654,7 @@ int main() {
 
     std::vector<unsigned char> image(W * H * 3, 0);
 
-    int N = 1;
+    int N = 32;
     double sigma = 0.5;
 
 #pragma omp parallel for schedule(dynamic, 1)
