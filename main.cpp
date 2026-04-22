@@ -362,14 +362,14 @@ int main() {
     // Sphere right_sphere_inner(Vector(20, 0, 0), 9.5, Vector(1.0, 1.0, 1.0),
     //                           false, true, false, 1.5, true);
 
-    Sphere left_sphere(Vector(-20, 0, 20), 10., Vector(1.0, 0.76, 0.33), true,
+    Sphere left_sphere(Vector(-20, 0, 10), 6, Vector(1.0, 0.76, 0.33), true,
                        false);
-    left_sphere.velocity = Vector(0, 200, 0);
+    left_sphere.velocity = Vector(0, 800, 0);
     Sphere center_sphere(Vector(0, 0, 0), 10., Vector(1.0, 0.0, 0.0), false,
                          true);
-    Sphere right_sphere_outer(Vector(20, 0, -20), 10.0, Vector(1.0, 1.0, 1.0),
+    Sphere right_sphere_outer(Vector(20, 20, -10), 15.0, Vector(1.0, 1.0, 1.0),
                               false, true);
-    Sphere right_sphere_inner(Vector(20, 0, -20), 9.5, Vector(1.0, 1.0, 1.0),
+    Sphere right_sphere_inner(Vector(20, 20, -10), 14.5, Vector(1.0, 1.0, 1.0),
                               false, true, false, 1.5, true);
 
     Sphere wall_left(Vector(-1000, 0, 0), 940, Vector(0.8, 0.2, 0.8));
@@ -379,21 +379,21 @@ int main() {
     Sphere ceiling(Vector(0, 1000, 0), 940, Vector(0.3, 0.5, 0.8));
     Sphere floor(Vector(0, -1000, 0), 990, Vector(0.2, 0.3, 0.8));
 
-    Sphere light_sphere(Vector(-10, 25, -10), 3, Vector(1, 1, 1), false, true,
-                        true);
-
     Scene scene;
     scene.camera_center = Vector(0, 0, 55);
-    scene.light_position = Vector(-10, 25, -10);
+    scene.light_position = Vector(-10, 20, 40);
     scene.light_radius = 3.0;
     scene.light_intensity = 1E7;
     scene.focal_distance = 55.0;
-    scene.lens_radius = 1.5;
+    scene.lens_radius = 4.0;
     scene.camera_shutter_time = 1.00 / 48; // from the internet
 
     scene.fov = 75 * M_PI / 180.;
     scene.gamma = 2.2;
     scene.max_light_bounce = 10;
+
+    Sphere light_sphere(scene.light_position, scene.light_radius,
+                        Vector(1, 1, 1), false, false, true);
 
     scene.addObject(&light_sphere);
 
@@ -478,7 +478,7 @@ int main() {
                                                             1. / scene.gamma)));
         }
     }
-    stbi_write_png("lab2.png", W, H, 3, &image[0], 0);
+    stbi_write_png("lab2_cooler.png", W, H, 3, &image[0], 0);
 
     return 0;
 }
