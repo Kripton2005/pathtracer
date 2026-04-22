@@ -507,11 +507,8 @@ class Scene {
             double x = r_xy * cos(2 * M_PI * r2);
             double y = r_xy * sin(2 * M_PI * r2);
             Vector random_light_point;
-            if (light_radius > eps)
-                random_light_point =
-                    light_position + Vector(x, y, z) * light_radius;
-            else
-                random_light_point = light_position;
+            random_light_point =
+                light_position + Vector(x, y, z) * light_radius;
             // test if there is a shadow by sending a new ray
             P = P + eps * N;
             Ray new_ray(
@@ -573,7 +570,7 @@ class Scene {
     std::vector<const Object *> objects;
 
     Vector camera_center, light_position;
-    double light_radius; // 0 if point source
+    double light_radius = 0; // 0 if point source
     double focal_distance, lens_radius, camera_shutter_time;
     double fov, gamma, light_intensity;
     int max_light_bounce;
@@ -614,16 +611,16 @@ int main() {
     Sphere ceiling(Vector(0, 1000, 0), 940, Vector(0.3, 0.5, 0.8));
     Sphere floor(Vector(0, -1000, 0), 990, Vector(0.2, 0.3, 0.8));
 
-    TriangleMesh cat(Vector(1.0, 1.0, 1.0)); // white cat for now
+    TriangleMesh cat(Vector(1.0, 1.0, 1.0), false, true); // transparent car!!
 
     cat.readOBJ("cat/Models_F0202A090/cat.obj");
-    cat.scale_translate(0.6, Vector(0.0, -5.0, 0.0));
+    cat.scale_translate(0.3, Vector(0.0, -5.0, 0.0));
     cat.compute_bounding_box();
 
     Scene scene;
     scene.camera_center = Vector(0, 0, 55);
     scene.light_position = Vector(-10, 20, 40);
-    scene.light_radius = 5.0;
+    // scene.light_radius = 5.0;
     scene.light_intensity = 1E7;
     scene.focal_distance = 55.0;
     scene.lens_radius = 0.3;
@@ -633,12 +630,12 @@ int main() {
 
     scene.fov = 60 * M_PI / 180.;
     scene.gamma = 2.2;
-    scene.max_light_bounce = 1;
+    scene.max_light_bounce = 5;
 
-    Sphere light_sphere(scene.light_position, scene.light_radius,
-                        Vector(1.0, 1.0, 1.0), false, false, true);
+    // Sphere light_sphere(scene.light_position, scene.light_radius,
+    //                     Vector(1.0, 1.0, 1.0), false, false, true);
 
-    scene.addObject(&light_sphere);
+    // scene.addObject(&light_sphere);
 
     // scene.addObject(&left_sphere);
     // scene.addObject(&center_sphere);
@@ -655,7 +652,7 @@ int main() {
 
     std::vector<unsigned char> image(W * H * 3, 0);
 
-    int N = 32;
+    int N = 100;
     double sigma = 0.5;
 
 #pragma omp parallel for schedule(dynamic, 1)
