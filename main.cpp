@@ -1,5 +1,8 @@
 #define _CRT_SECURE_NO_WARNINGS 1
 #include <cmath>
+#include <cstring>
+#include <fstream>
+#include <map>
 #include <omp.h>
 #include <random>
 #include <vector>
@@ -128,17 +131,193 @@ class Sphere : public Object {
     bool invert_normals;
 };
 
-// I will provide you with an obj mesh loader (labs 3 and 4)
+// Class only used in labs 3 and 4
+class TriangleIndices {
+  public:
+    TriangleIndices(int vtxi = -1, int vtxj = -1, int vtxk = -1, int ni = -1,
+                    int nj = -1, int nk = -1, int uvi = -1, int uvj = -1,
+                    int uvk = -1, int group = -1) {
+        vtx[0] = vtxi;
+        vtx[1] = vtxj;
+        vtx[2] = vtxk;
+        uv[0] = uvi;
+        uv[1] = uvj;
+        uv[2] = uvk;
+        n[0] = ni;
+        n[1] = nj;
+        n[2] = nk;
+        this->group = group;
+    };
+    int vtx[3]; // indices within the vertex coordinates array
+    int uv[3];  // indices within the uv coordinates array
+    int n[3];   // indices within the normals array
+    int group;  // face group
+};
+
+// Class only used in labs 3 and 4
 class TriangleMesh : public Object {
   public:
     TriangleMesh(const Vector &albedo, bool mirror = false,
                  bool transparent = false)
         : ::Object(albedo, mirror, transparent){};
 
+    // first scale and then translate the current object
+    void scale_translate(double s, const Vector &t) {
+        for (size_t i = 0; i < vertices.size(); i++) {
+            vertices[i] = vertices[i] * s + t;
+        }
+    }
+
+    // read an .obj file
+    void readOBJ(const char *obj) {
+        std::ifstream f(obj);
+        if (!f)
+            return;
+
+        std::map<std::string, int> mtls;
+        int curGroup = -1, maxGroup = -1;
+
+        // OBJ indices are 1-based and can be negative (relative), this
+        // normalizes them
+        auto resolveIdx = [](int i, int size) {
+            return i < 0 ? size + i : i - 1;
+        };
+
+        auto setFaceVerts = [&](TriangleIndices &t, int i0, int i1, int i2) {
+            t.vtx[0] = resolveIdx(i0, vertices.size());
+            t.vtx[1] = resolveIdx(i1, vertices.size());
+            t.vtx[2] = resolveIdx(i2, vertices.size());
+        };
+        auto setFaceUVs = [&](TriangleIndices &t, int j0, int j1, int j2) {
+            t.uv[0] = resolveIdx(j0, uvs.size());
+            t.uv[1] = resolveIdx(j1, uvs.size());
+            t.uv[2] = resolveIdx(j2, uvs.size());
+        };
+        auto setFaceNormals = [&](TriangleIndices &t, int k0, int k1, int k2) {
+            t.n[0] = resolveIdx(k0, normals.size());
+            t.n[1] = resolveIdx(k1, normals.size());
+            t.n[2] = resolveIdx(k2, normals.size());
+        };
+
+        std::string line;
+        while (std::getline(f, line)) {
+            // Trim trailing whitespace
+            line.erase(line.find_last_not_of(" \r\t\n") + 1);
+            if (line.empty())
+                continue;
+
+            const char *s = line.c_str();
+
+            if (line.rfind("usemtl ", 0) == 0) {
+                std::string matname = line.substr(7);
+                auto result = mtls.emplace(matname, maxGroup + 1);
+                if (result.second) {
+                    curGroup = ++maxGroup;
+                } else {
+                    curGroup = result.first->second;
+                }
+            } else if (line.rfind("vn ", 0) == 0) {
+                Vector v;
+                sscanf(s, "vn %lf %lf %lf", &v[0], &v[1], &v[2]);
+                normals.push_back(v);
+            } else if (line.rfind("vt ", 0) == 0) {
+                Vector v;
+                sscanf(s, "vt %lf %lf", &v[0], &v[1]);
+                uvs.push_back(v);
+            } else if (line.rfind("v ", 0) == 0) {
+                Vector pos, col;
+                if (sscanf(s, "v %lf %lf %lf %lf %lf %lf", &pos[0], &pos[1],
+                           &pos[2], &col[0], &col[1], &col[2]) == 6) {
+                    for (int i = 0; i < 3; i++)
+                        col[i] = std::min(1.0, std::max(0.0, col[i]));
+                    vertexcolors.push_back(col);
+                } else {
+                    sscanf(s, "v %lf %lf %lf", &pos[0], &pos[1], &pos[2]);
+                }
+                vertices.push_back(pos);
+            } else if (line[0] == 'f') {
+                int i[4], j[4], k[4], offset, nn;
+                const char *cur = s + 1;
+                TriangleIndices t;
+                t.group = curGroup;
+
+                // Try each face format: v/vt/vn, v/vt, v//vn, v
+                if ((nn = sscanf(cur, "%d/%d/%d %d/%d/%d %d/%d/%d%n", &i[0],
+                                 &j[0], &k[0], &i[1], &j[1], &k[1], &i[2],
+                                 &j[2], &k[2], &offset)) == 9) {
+                    setFaceVerts(t, i[0], i[1], i[2]);
+                    setFaceUVs(t, j[0], j[1], j[2]);
+                    setFaceNormals(t, k[0], k[1], k[2]);
+                } else if ((nn = sscanf(cur, "%d/%d %d/%d %d/%d%n", &i[0],
+                                        &j[0], &i[1], &j[1], &i[2], &j[2],
+                                        &offset)) == 6) {
+                    setFaceVerts(t, i[0], i[1], i[2]);
+                    setFaceUVs(t, j[0], j[1], j[2]);
+                } else if ((nn = sscanf(cur, "%d//%d %d//%d %d//%d%n", &i[0],
+                                        &k[0], &i[1], &k[1], &i[2], &k[2],
+                                        &offset)) == 6) {
+                    setFaceVerts(t, i[0], i[1], i[2]);
+                    setFaceNormals(t, k[0], k[1], k[2]);
+                } else if ((nn = sscanf(cur, "%d %d %d%n", &i[0], &i[1], &i[2],
+                                        &offset)) == 3) {
+                    setFaceVerts(t, i[0], i[1], i[2]);
+                } else
+                    continue;
+
+                indices.push_back(t);
+                cur += offset;
+
+                // Fan triangulation for polygon faces (4+ vertices)
+                while (*cur && *cur != '\n') {
+                    TriangleIndices t2;
+                    t2.group = curGroup;
+                    if ((nn = sscanf(cur, " %d/%d/%d%n", &i[3], &j[3], &k[3],
+                                     &offset)) == 3) {
+                        setFaceVerts(t2, i[0], i[2], i[3]);
+                        setFaceUVs(t2, j[0], j[2], j[3]);
+                        setFaceNormals(t2, k[0], k[2], k[3]);
+                    } else if ((nn = sscanf(cur, " %d/%d%n", &i[3], &j[3],
+                                            &offset)) == 2) {
+                        setFaceVerts(t2, i[0], i[2], i[3]);
+                        setFaceUVs(t2, j[0], j[2], j[3]);
+                    } else if ((nn = sscanf(cur, " %d//%d%n", &i[3], &k[3],
+                                            &offset)) == 2) {
+                        setFaceVerts(t2, i[0], i[2], i[3]);
+                        setFaceNormals(t2, k[0], k[2], k[3]);
+                    } else if ((nn = sscanf(cur, " %d%n", &i[3], &offset)) ==
+                               1) {
+                        setFaceVerts(t2, i[0], i[2], i[3]);
+                    } else {
+                        cur++;
+                        continue;
+                    }
+
+                    indices.push_back(t2);
+                    cur += offset;
+                    i[2] = i[3];
+                    j[2] = j[3];
+                    k[2] = k[3];
+                }
+            }
+        }
+    }
+
+    // TODO ray-mesh intersection (labs 3 and 4)
     bool intersect(const Ray &ray, Vector &P, double &t, Vector &N) const {
-        // TODO (labs 3 and 4)
+
+        // lab 3 : for each triangle, compute the ray-triangle intersection with
+        // Moller-Trumbore algorithm lab 3 : once done, speed it up by first
+        // checking against the mesh bounding box lab 4 : recursively apply the
+        // bounding-box test from a BVH datastructure
+
         return false;
     }
+
+    std::vector<TriangleIndices> indices;
+    std::vector<Vector> vertices;
+    std::vector<Vector> normals;
+    std::vector<Vector> uvs;
+    std::vector<Vector> vertexcolors;
 };
 
 class Scene {
@@ -190,9 +369,8 @@ class Scene {
                 if (light_radius < eps) // basically 0
                     return Vector(1.0, 1.0, 1.0);
                 double area = 4.0 * M_PI * light_radius * light_radius;
-                double emission = light_intensity / (area * M_PI);
-                return Vector(1, 1, 1) *
-                       emission; // I'm sure it's a smart formula
+                return light_intensity / area *
+                       objects[object_id]->albedo; // TODO smarter formula
             }
             if (objects[object_id]->mirror) {
                 // return getColor in the reflected direction, with
@@ -362,15 +540,17 @@ int main() {
     // Sphere right_sphere_inner(Vector(20, 0, 0), 9.5, Vector(1.0, 1.0, 1.0),
     //                           false, true, false, 1.5, true);
 
-    Sphere left_sphere(Vector(-20, 0, 10), 6, Vector(1.0, 0.76, 0.33), true,
-                       false);
-    left_sphere.velocity = Vector(0, 800, 0);
-    Sphere center_sphere(Vector(0, 0, 0), 10., Vector(1.0, 0.0, 0.0), false,
-                         true);
-    Sphere right_sphere_outer(Vector(20, 20, -10), 15.0, Vector(1.0, 1.0, 1.0),
-                              false, true);
-    Sphere right_sphere_inner(Vector(20, 20, -10), 14.5, Vector(1.0, 1.0, 1.0),
-                              false, true, false, 1.5, true);
+    // Sphere left_sphere(Vector(-15, 0, 20), 6, Vector(1.0, 0.76, 0.33), true,
+    //                    false);
+    // left_sphere.velocity = Vector(0, 400, 0);
+    // Sphere center_sphere(Vector(0, 0, 0), 10., Vector(1.0, 0.0, 0.0), false,
+    //                      true);
+    // Sphere right_sphere_outer(Vector(20, 20, -10), 15.0,
+    // Vector(1.0, 1.0, 1.0),
+    //                           false, true);
+    // Sphere right_sphere_inner(Vector(20, 20, -10), 14.5,
+    // Vector(1.0, 1.0, 1.0),
+    //                           false, true, false, 1.5, true);
 
     Sphere wall_left(Vector(-1000, 0, 0), 940, Vector(0.8, 0.2, 0.8));
     Sphere wall_right(Vector(1000, 0, 0), 940, Vector(0.8, 0.8, 0.2));
@@ -382,25 +562,26 @@ int main() {
     Scene scene;
     scene.camera_center = Vector(0, 0, 55);
     scene.light_position = Vector(-10, 20, 40);
-    scene.light_radius = 3.0;
+    scene.light_radius = 5.0;
     scene.light_intensity = 1E7;
     scene.focal_distance = 55.0;
-    scene.lens_radius = 4.0;
-    scene.camera_shutter_time = 1.00 / 48; // from the internet
+    scene.lens_radius = 0.3;
+    scene.camera_shutter_time =
+        1.00 / 48; // from the cinematographic shutter formula Wikipedia
 
-    scene.fov = 75 * M_PI / 180.;
+    scene.fov = 60 * M_PI / 180.;
     scene.gamma = 2.2;
     scene.max_light_bounce = 10;
 
     Sphere light_sphere(scene.light_position, scene.light_radius,
-                        Vector(1, 1, 1), false, false, true);
+                        Vector(1.0, 1.0, 1.0), false, false, true);
 
     scene.addObject(&light_sphere);
 
-    scene.addObject(&left_sphere);
-    scene.addObject(&center_sphere);
-    scene.addObject(&right_sphere_outer);
-    scene.addObject(&right_sphere_inner); // ADDITION: the trick
+    // scene.addObject(&left_sphere);
+    // scene.addObject(&center_sphere);
+    // scene.addObject(&right_sphere_outer);
+    // scene.addObject(&right_sphere_inner); // ADDITION: the trick
 
     scene.addObject(&wall_left);
     scene.addObject(&wall_right);
@@ -411,7 +592,7 @@ int main() {
 
     std::vector<unsigned char> image(W * H * 3, 0);
 
-    int N = 5000;
+    int N = 50;
     double sigma = 0.5;
 
 #pragma omp parallel for schedule(dynamic, 1)
@@ -478,7 +659,7 @@ int main() {
                                                             1. / scene.gamma)));
         }
     }
-    stbi_write_png("lab2_cooler.png", W, H, 3, &image[0], 0);
+    stbi_write_png("lab3.png", W, H, 3, &image[0], 0);
 
     return 0;
 }
