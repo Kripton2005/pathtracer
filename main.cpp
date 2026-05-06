@@ -1,3 +1,5 @@
+#include <algorithm>
+#include <filesystem>
 #include <memory>
 #define _CRT_SECURE_NO_WARNINGS 1
 #include <cmath>
@@ -126,8 +128,8 @@ class Object {
           is_light(is_light), n(n), invert_normals(invert_normals){};
 
     virtual Object *clone() const = 0;
-    virtual bool intersect(const Ray &ray, Vector &P, double &t,
-                           Vector &N) const = 0;
+    virtual bool intersect(const Ray &ray, Vector &P, double &t, Vector &N,
+                           Vector &albedo) const = 0;
     virtual void scale_translate(double s, const Vector &t) = 0;
     virtual void rotate(const Matrix &m) = 0;
     virtual void compute_centroid() = 0;
@@ -137,7 +139,37 @@ class Object {
     bool mirror, transparent, is_light;
     double n;
     bool invert_normals;
-    Vector B_min, B_max;
+    struct BBox {
+        Vector min, max;
+        int longest_axis() const {
+            Vector diag = max - min;
+            if (diag[0] > diag[1] - eps && diag[0] > diag[2] - eps)
+                return 0;
+            if (diag[1] > diag[0] - eps && diag[1] > diag[2] - eps)
+                return 1;
+            return 2;
+        }
+        bool intersect_ray(const Ray &ray, double &t) const {
+            double tx_min = (min[0] - ray.O[0]) / ray.u[0];
+            double tx_max = (max[0] - ray.O[0]) / ray.u[0];
+            if (tx_max < tx_min - eps)
+                std::swap(tx_min, tx_max);
+            double ty_min = (min[1] - ray.O[1]) / ray.u[1];
+            double ty_max = (max[1] - ray.O[1]) / ray.u[1];
+            if (ty_max < ty_min - eps)
+                std::swap(ty_min, ty_max);
+            double tz_min = (min[2] - ray.O[2]) / ray.u[2];
+            double tz_max = (max[2] - ray.O[2]) / ray.u[2];
+            if (tz_max < tz_min - eps)
+                std::swap(tz_min, tz_max);
+            double t_min = std::max(tx_min, std::max(ty_min, tz_min));
+            double t_max = std::min(tx_max, std::min(ty_max, tz_max));
+            if (t_min > t_max + eps)
+                return false;
+            t = t_min;
+            return true;
+        }
+    } bbox;
     Vector centroid{0, 0, 0};
 };
 
@@ -147,15 +179,18 @@ class Sphere : public Object {
            bool mirror = false, bool transparent = false, bool is_light = false,
            double n = 1.5, bool invert_normals = false)
         : ::Object(albedo, mirror, transparent, is_light, n, invert_normals),
-          C(center), R(radius){};
+          C(center), R(radius) {
+        compute_centroid();
+        compute_bounding_box();
+    };
 
     Sphere *clone() const override { return new Sphere(*this); }
     // returns true iif there is an intersection between the ray and the sphere
     // if there is an intersection, also computes the point of intersection P,
     // t>=0 the distance between the ray origin and P (i.e., the parameter along
     // the ray) and the unit normal N
-    bool intersect(const Ray &ray, Vector &P, double &t,
-                   Vector &N) const override {
+    bool intersect(const Ray &ray, Vector &P, double &t, Vector &N,
+                   Vector &albedo) const override {
         Vector real_C = C + velocity * ray.time;
         double delta = sqr(dot(ray.u, ray.O - real_C)) -
                        ((ray.O - real_C).norm2() - sqr(R));
@@ -176,19 +211,23 @@ class Sphere : public Object {
         N.normalize();
         if (invert_normals)
             N = N * -1.0;
+        albedo = this->albedo;
         return true;
     }
     void scale_translate(double s, const Vector &t) override {
-        C = C + t;
+        C = C * s + t;
         R *= s;
+        bbox.min = bbox.min * s + t;
+        bbox.max = bbox.max * s + t;
+        centroid = C;
     }
     void rotate(const Matrix &) override {
         return; // sphere doesn't do anything when rotated
     }
     void compute_centroid() override { centroid = C; }
     void compute_bounding_box() override {
-        B_max = C + R * Vector(1, 1, 1);
-        B_min = C - R * Vector(1, 1, 1);
+        bbox.max = C + R * Vector(1, 1, 1);
+        bbox.min = C - R * Vector(1, 1, 1);
     }
     Vector C;
     double R;
@@ -230,6 +269,13 @@ class TriangleMesh : public Object {
     void scale_translate(double s, const Vector &t) override {
         for (size_t i = 0; i < vertices.size(); i++) {
             vertices[i] = vertices[i] * s + t;
+        }
+        bbox.min = bbox.min * s + t;
+        bbox.max = bbox.max * s + t;
+        centroid = centroid * s + t;
+        for (auto &node : bvh_nodes) {
+            node.bbox.min = node.bbox.min * s + t;
+            node.bbox.max = node.bbox.max * s + t;
         }
     }
 
@@ -365,18 +411,36 @@ class TriangleMesh : public Object {
                 }
             }
         }
+        compute_bounding_box();
+        compute_centroid();
+        build_BVH();
     }
 
+    void update_bbox(BBox &bbox, Vector &vertex) {
+        bbox.max[0] = std::max(bbox.max[0], vertex[0]);
+        bbox.max[1] = std::max(bbox.max[1], vertex[1]);
+        bbox.max[2] = std::max(bbox.max[2], vertex[2]);
+        bbox.min[0] = std::min(bbox.min[0], vertex[0]);
+        bbox.min[1] = std::min(bbox.min[1], vertex[1]);
+        bbox.min[2] = std::min(bbox.min[2], vertex[2]);
+    }
+
+    BBox compute_bounding_box(int start_index, int end_index) {
+        BBox bbox;
+        bbox.min = std::numeric_limits<double>::max() * Vector(1.0, 1.0, 1.0);
+        bbox.max = -1 * bbox.min;
+        for (int i = start_index; i < end_index; i++) {
+            update_bbox(bbox, vertices[indices[i].vtx[0]]);
+            update_bbox(bbox, vertices[indices[i].vtx[1]]);
+            update_bbox(bbox, vertices[indices[i].vtx[2]]);
+        }
+        return bbox;
+    }
     void compute_bounding_box() override {
-        B_min = std::numeric_limits<double>::max() * Vector(1.0, 1.0, 1.0);
-        B_max = -1 * B_min;
+        bbox.min = std::numeric_limits<double>::max() * Vector(1.0, 1.0, 1.0);
+        bbox.max = -1 * bbox.min;
         for (auto vertex : vertices) {
-            B_max[0] = std::max(B_max[0], vertex[0]);
-            B_max[1] = std::max(B_max[1], vertex[1]);
-            B_max[2] = std::max(B_max[2], vertex[2]);
-            B_min[0] = std::min(B_min[0], vertex[0]);
-            B_min[1] = std::min(B_min[1], vertex[1]);
-            B_min[2] = std::min(B_min[2], vertex[2]);
+            update_bbox(bbox, vertex);
         }
     }
     void compute_centroid() override {
@@ -406,64 +470,102 @@ class TriangleMesh : public Object {
         }
     }
 
-    // TODO ray-mesh intersection (labs 3 and 4)
-    bool intersect(const Ray &ray, Vector &P, double &t,
-                   Vector &N) const override {
+    // ray-mesh intersection (labs 3 and 4)
+    bool intersect(const Ray &ray, Vector &P, double &t, Vector &N,
+                   Vector &albedo) const override {
 
         // lab 3 : for each triangle, compute the ray-triangle intersection with
         // Moller-Trumbore algorithm lab 3 : once done, speed it up by first
         // checking against the mesh bounding box lab 4 : recursively apply the
         // bounding-box test from a BVH datastructure
-
-        double tx_min = (B_min[0] - ray.O[0]) / ray.u[0];
-        double tx_max = (B_max[0] - ray.O[0]) / ray.u[0];
-        if (tx_max < tx_min - eps)
-            std::swap(tx_min, tx_max);
-        double ty_min = (B_min[1] - ray.O[1]) / ray.u[1];
-        double ty_max = (B_max[1] - ray.O[1]) / ray.u[1];
-        if (ty_max < ty_min - eps)
-            std::swap(ty_min, ty_max);
-        double tz_min = (B_min[2] - ray.O[2]) / ray.u[2];
-        double tz_max = (B_max[2] - ray.O[2]) / ray.u[2];
-        if (tz_max < tz_min - eps)
-            std::swap(tz_min, tz_max);
-        double t_min = std::max(tx_min, std::max(ty_min, tz_min));
-        double t_max = std::min(tx_max, std::min(ty_max, tz_max));
-        if (t_min > t_max + eps)
+        double t_prime;
+        if (!this->bbox.intersect_ray(ray, t_prime))
             return false;
-
-        bool found = 0;
+        std::vector<int> nodes_to_visit;
+        nodes_to_visit.push_back(0);
         t = std::numeric_limits<double>::max();
-        for (auto triangle : indices) {
-            Vector A = vertices[triangle.vtx[0]];
-            Vector B = vertices[triangle.vtx[1]];
-            Vector C = vertices[triangle.vtx[2]];
-            Vector e1 = B - A;
-            Vector e2 = C - A;
-            Vector N_prime = cross(e1, e2);
-            double t_prime = dot(A - ray.O, N_prime) / dot(ray.u, N_prime);
-            double beta =
-                dot(e2, cross(A - ray.O, ray.u)) / dot(ray.u, N_prime);
-            double gamma =
-                -dot(e1, cross(A - ray.O, ray.u)) / dot(ray.u, N_prime);
-            double alfa = 1 - beta - gamma;
-            if (eps < t_prime && t_prime < t &&
-                -eps < std::min(alfa, std::min(beta, gamma)) &&
-                std::max(alfa, std::max(beta, gamma)) < 1 + eps) {
-                found = true;
-                t = t_prime;
-                N = N_prime;
-                // smoothen the object
-                Vector normal_A = normals[triangle.n[0]];
-                Vector normal_B = normals[triangle.n[1]];
-                Vector normal_C = normals[triangle.n[2]];
-                N = alfa * normal_A + beta * normal_B + gamma * normal_C;
-                // can be deleted
-                N.normalize();
-                if (dot(ray.u, N) > 0) {
-                    N = -1 * N;
+        bool found = 0;
+        while (!nodes_to_visit.empty()) {
+            BVHNode node = bvh_nodes[nodes_to_visit.back()];
+            nodes_to_visit.pop_back();
+            if (!node.is_leaf()) {
+                if (bvh_nodes[node.left].bbox.intersect_ray(ray, t_prime)) {
+                    if (t_prime < t) {
+                        nodes_to_visit.push_back(node.left);
+                    }
                 }
-                P = alfa * A + beta * B + gamma * C;
+                if (bvh_nodes[node.right].bbox.intersect_ray(ray, t_prime)) {
+                    if (t_prime < t) {
+                        nodes_to_visit.push_back(node.right);
+                    }
+                }
+            } else {
+                for (size_t i = node.start_index; i < node.end_index; i++) {
+                    TriangleIndices triangle = indices[i];
+                    Vector A = vertices[triangle.vtx[0]];
+                    Vector B = vertices[triangle.vtx[1]];
+                    Vector C = vertices[triangle.vtx[2]];
+                    Vector e1 = B - A;
+                    Vector e2 = C - A;
+                    Vector N_prime = cross(e1, e2);
+                    double t_prime =
+                        dot(A - ray.O, N_prime) / dot(ray.u, N_prime);
+                    double beta =
+                        dot(e2, cross(A - ray.O, ray.u)) / dot(ray.u, N_prime);
+                    double gamma =
+                        -dot(e1, cross(A - ray.O, ray.u)) / dot(ray.u, N_prime);
+                    double alfa = 1 - beta - gamma;
+                    if (eps < t_prime && t_prime < t &&
+                        -eps < std::min(alfa, std::min(beta, gamma)) &&
+                        std::max(alfa, std::max(beta, gamma)) < 1 + eps) {
+                        found = true;
+                        t = t_prime;
+                        N = N_prime;
+                        // smoothen the object
+                        Vector normal_A = normals[triangle.n[0]];
+                        Vector normal_B = normals[triangle.n[1]];
+                        Vector normal_C = normals[triangle.n[2]];
+                        N = alfa * normal_A + beta * normal_B +
+                            gamma * normal_C;
+                        // can be deleted
+                        N.normalize();
+                        if (dot(ray.u, N) > 0) {
+                            N = -1 * N;
+                        }
+                        P = alfa * A + beta * B + gamma * C;
+                        if (triangle.group != -1 &&
+                            triangle.group < (int)textures.size()) {
+                            // inshallah albedo calculation
+                            Vector uv_A = uvs[triangle.uv[0]];
+                            Vector uv_B = uvs[triangle.uv[1]];
+                            Vector uv_C = uvs[triangle.uv[2]];
+                            Vector uv_P =
+                                alfa * uv_A + beta * uv_B + gamma * uv_C;
+                            // make them modulo 1 - just the fractional part
+                            double u = uv_P[0] - std::floor(uv_P[0]);
+                            double v = uv_P[1] - std::floor(uv_P[1]);
+                            v = 1 -
+                                v; // since it's top-left instead of bottom-left
+                            Texture texture = textures[triangle.group];
+                            int x = (int)(u * texture.W);
+                            int y = (int)(v * texture.H);
+                            x = std::max(0, std::min(texture.W - 1, x));
+                            y = std::max(0,
+                                         std::min(texture.H - 1, y)); // safety
+                            int idx = ((y * texture.W) + x) * 3;
+                            // *3 because every pixel has 3 channels for colour
+                            // (RGB)
+                            albedo = Vector(
+                                std::pow(texture.data[idx] / 255.0, 2.2),
+                                std::pow(texture.data[idx + 1] / 255.0, 2.2),
+                                std::pow(texture.data[idx + 2] / 255.0,
+                                         2.2)); // gamma correction thing, TODO
+                                                // remove hardcoding
+                        } else {
+                            albedo = this->albedo;
+                        }
+                    }
+                }
             }
         }
         if (invert_normals)
@@ -481,6 +583,66 @@ class TriangleMesh : public Object {
             n = m * n;
             n.normalize();
         }
+        compute_bounding_box();
+        build_BVH();
+    }
+
+    void add_textures(
+        const char *filename) { // IMPORTANT: add textures in the correct order
+        int w, h, c;
+        unsigned char *data = stbi_load(filename, &w, &h, &c, 3);
+        if (data) {
+            textures.push_back({data, w, h});
+        }
+    }
+
+    Vector get_barycenter(const TriangleIndices &t) {
+        return 1.0 / 3.0 *
+               (vertices[t.vtx[0]] + vertices[t.vtx[1]] + vertices[t.vtx[2]]);
+    }
+
+    int build_BVH_recursion(int start_index, int end_index) {
+        // oh boy
+        BVHNode cur;
+
+        cur.start_index = start_index;
+        cur.end_index = end_index;
+        cur.bbox = compute_bounding_box(start_index, end_index);
+
+        int num_triangles = end_index - start_index;
+
+        if (num_triangles <= 2) { // stopping criterion
+            cur.left = -1;
+            cur.right = -1;
+            bvh_nodes.push_back(cur);
+            return bvh_nodes.size() - 1;
+        }
+
+        int axis = cur.bbox.longest_axis();
+
+        int mid = start_index + num_triangles / 2;
+        std::nth_element(
+            indices.begin() + start_index, indices.begin() + mid,
+            indices.begin() + end_index,
+            [axis, this](const TriangleIndices &a, const TriangleIndices &b) {
+                return get_barycenter(a)[axis] < get_barycenter(b)[axis];
+            });
+
+        int pos = bvh_nodes.size();
+        bvh_nodes.push_back(cur);
+
+        int left = build_BVH_recursion(start_index, mid);
+        int right = build_BVH_recursion(mid, end_index);
+
+        bvh_nodes[pos].left = left;
+        bvh_nodes[pos].right = right;
+
+        return pos;
+    }
+
+    void build_BVH() {
+        bvh_nodes.clear();
+        build_BVH_recursion(0, indices.size());
     }
 
     std::vector<TriangleIndices> indices;
@@ -488,6 +650,20 @@ class TriangleMesh : public Object {
     std::vector<Vector> normals;
     std::vector<Vector> uvs;
     std::vector<Vector> vertexcolors;
+    // texture things
+    struct Texture {
+        unsigned char *data;
+        int W, H; // texture resolution
+    };
+    std::vector<Texture> textures;
+
+    struct BVHNode {
+        int left, right; // indices in bvh_nodes vector
+        BBox bbox;
+        size_t start_index, end_index;
+        bool is_leaf() const { return left == -1; }
+    };
+    std::vector<BVHNode> bvh_nodes;
 };
 
 class Scene {
@@ -509,17 +685,20 @@ class Scene {
     // (i.e., the parameter along the ray) and the unit normal N. Also returns
     // the index of the object within the std::vector objects in object_id
     bool intersect(const Ray &ray, Vector &P, double &t, Vector &N,
-                   int &object_id) const {
+                   Vector &albedo, int &object_id) const {
         t = std::numeric_limits<double>::max();
         object_id = -1;
         Vector P_func, N_func;
         double t_func;
+        Vector albedo_func;
         for (size_t i = 0; i < objects.size(); i++) {
-            if (objects[i]->intersect(ray, P_func, t_func, N_func)) {
+            if (objects[i]->intersect(ray, P_func, t_func, N_func,
+                                      albedo_func)) {
                 if (t_func < t) {
                     t = t_func;
                     P = P_func;
                     N = N_func;
+                    albedo = albedo_func;
                     object_id = i;
                 }
             }
@@ -538,7 +717,8 @@ class Scene {
         double t;
         int object_id;
         Vector direct_light;
-        if (intersect(ray, P, t, N, object_id)) {
+        Vector albedo;
+        if (intersect(ray, P, t, N, albedo, object_id)) {
             if (objects[object_id]->is_light) {
                 if (last_bounce_was_diffuse) {
                     return Vector(0.0, 0.0,
@@ -547,8 +727,7 @@ class Scene {
                 if (light_radius < eps) // basically 0
                     return Vector(1.0, 1.0, 1.0);
                 double area = 4.0 * M_PI * light_radius * light_radius;
-                return light_intensity / area *
-                       objects[object_id]->albedo; // TODO smarter formula
+                return light_intensity / area * albedo; // TODO smarter formula
             }
             if (objects[object_id]->mirror) {
                 // return getColor in the reflected direction, with
@@ -557,7 +736,7 @@ class Scene {
                 new_vec.normalize();
                 return getColor(Ray(P + eps * N, new_vec, ray.time),
                                 recursion_depth + 1) *
-                       objects[object_id]->albedo;
+                       albedo;
             }
 
             if (objects[object_id]->transparent) {
@@ -591,7 +770,7 @@ class Scene {
                     // offset on the same side
                     return getColor(Ray(P + eps * N_ref, ref, ray.time),
                                     recursion_depth + 1) *
-                           objects[object_id]->albedo;
+                           albedo;
                 } else {
                     // ADDITION: Fresnel law
                     double k0 = sqr((n1 - n2) / (n1 + n2));
@@ -612,7 +791,7 @@ class Scene {
                         // offset on the opposite side
                         return getColor(Ray(P - eps * N_ref, ref, ray.time),
                                         recursion_depth + 1) *
-                               objects[object_id]->albedo;
+                               albedo;
                     }
                 }
             }
@@ -638,8 +817,9 @@ class Scene {
             Vector P1, N1;
             int object_id1;
             double t1;
+            Vector albedo1;
             bool shadow = 0;
-            if (intersect(new_ray, P1, t1, N1, object_id1)) {
+            if (intersect(new_ray, P1, t1, N1, albedo1, object_id1)) {
                 if (!objects[object_id1]->is_light &&
                     (P1 - P).norm2() <
                         (random_light_point - P)
@@ -654,7 +834,7 @@ class Scene {
                 direct_light =
                     light_intensity /
                     (4 * M_PI * (random_light_point - P).norm2()) *
-                    (objects[object_id]->albedo / M_PI) *
+                    (albedo / M_PI) *
                     std::max(0.0, dot(N, (random_light_point - P) /
                                              (random_light_point - P).norm()));
             // (lab 2) : add indirect lighting component with a recursive
@@ -679,16 +859,14 @@ class Scene {
             dir.normalize();
             Vector next_color =
                 getColor(Ray(P, dir, ray.time), recursion_depth + 1, true);
-            Vector indirect_light = next_color * objects[object_id]->albedo;
+            Vector indirect_light = next_color * albedo;
             return direct_light + indirect_light;
         }
         return Vector(0, 0, 0);
     }
 
-    void generate_image(int W, int H, const char *target) {
-        std::vector<unsigned char> image(W * H * 3, 0);
-
-        int N = 16;
+    void generate_image(int W, int H, std::vector<unsigned char> &image) {
+        int N = 200;
         double sigma = 0.5;
 
 #pragma omp parallel for schedule(dynamic, 1)
@@ -754,15 +932,15 @@ class Scene {
                     std::max(0., 255. * std::pow(color[2] / 255., 1. / gamma)));
             }
         }
-        stbi_write_png(target, W, H, 3, &image[0], 0);
     }
 
     void _rotate_generate_gif(int W, int H, Object &obj, int rot, Vector axis,
                               int frame_nb, int &total_frames,
                               const char *folder) {
-
-        for (int frame = total_frames; frame < total_frames + frame_nb;
-             frame++) {
+        if (frame_nb % rot) {
+            frame_nb += rot - frame_nb % rot;
+        }
+        for (int frame = 0; frame < frame_nb / rot; frame++) {
             Matrix m = create_rotation_matrix(
                 axis,
                 rot * 2 * M_PI * frame /
@@ -772,17 +950,20 @@ class Scene {
             // rotate multiple times in a row, I just do one big rotation, the
             // time complexity doesn't come from here anyway
             std::unique_ptr<Object> obj_cur(obj.clone());
-            obj_cur->compute_centroid();
             obj_cur->rotate(m);
-            obj_cur->compute_bounding_box();
 
             addObject(obj_cur.get());
 
-            char filename[256];
-            snprintf(filename, sizeof(filename), "%s/frame_%03d.png", folder,
-                     frame);
+            std::vector<unsigned char> image(W * H * 3, 0);
+            generate_image(W, H, image);
 
-            generate_image(W, H, filename);
+            for (int j = 0; j < rot; j++) {
+                char filename[256];
+                snprintf(filename, sizeof(filename), "%s/frame_%03d.png",
+                         folder, total_frames + j * (frame_nb / rot) + frame);
+
+                stbi_write_png(filename, W, H, 3, &image[0], 0);
+            }
 
             removeObject(obj_cur.get());
         }
@@ -793,27 +974,27 @@ class Scene {
                             int frame_nb, int &total_frames,
                             const char *folder) {
         // move it top right
-        for (int frame = total_frames; frame < total_frames + frame_nb;
-             frame++) {
+        for (int frame = 0; frame < frame_nb; frame++) {
 
             std::unique_ptr<Object> obj_cur(obj.clone());
-            obj_cur->scale_translate(1.0, translation * (frame - frame_nb) /
-                                              frame_nb);
-            obj_cur->compute_bounding_box();
+            obj_cur->scale_translate(1.0, translation * frame / frame_nb);
 
             addObject(obj_cur.get());
 
             char filename[256];
             snprintf(filename, sizeof(filename), "%s/frame_%03d.png", folder,
-                     frame);
+                     total_frames + frame);
 
-            generate_image(W, H, filename);
+            std::vector<unsigned char> image(W * H * 3, 0);
+            generate_image(W, H, image);
+            stbi_write_png(filename, W, H, 3, &image[0], 0);
 
             removeObject(obj_cur.get());
         }
         total_frames += frame_nb;
     }
     void generate_gif(int W, int H, Object &obj, const char *folder) {
+        std::filesystem::create_directories(folder);
         int total_frames = 0;
         constexpr int frame_nb = 24;
         _rotate_generate_gif(W, H, obj, 4, Vector(0, 1, 0), frame_nb,
@@ -870,10 +1051,12 @@ int main() {
     Sphere ceiling(Vector(0, 1000, 0), 940, Vector(0.3, 0.5, 0.8));
     Sphere floor(Vector(0, -1000, 0), 990, Vector(0.2, 0.3, 0.8));
 
-    TriangleMesh cat(Vector(1.0, 0.85, 0.1), true,
-                     false); // golden car!!
+    TriangleMesh cat(Vector(1.0, 0.85, 0.1));
     cat.readOBJ("cat/Models_F0202A090/cat.obj");
-    cat.scale_translate(0.3, Vector(0.0, -5.0, 0.0));
+    cat.scale_translate(0.5, Vector(0.0, -5.0, 0.0));
+    cat.add_textures("cat/Models_F0202A090/cat_diff.png"); // textured car!
+    Matrix m = create_rotation_matrix(Vector(0, 1, 0), -M_PI / 4);
+    cat.rotate(m);
 
     Scene scene;
     scene.camera_center = Vector(0, 0, 55);
@@ -899,6 +1082,7 @@ int main() {
     // scene.addObject(&center_sphere);
     // scene.addObject(&right_sphere_outer);
     // scene.addObject(&right_sphere_inner); // ADDITION: the trick
+
     // scene.addObject(&cat);
 
     scene.addObject(&wall_left);
@@ -908,9 +1092,9 @@ int main() {
     scene.addObject(&ceiling);
     scene.addObject(&floor);
 
-    // generate_image(scene, W, H, "lab3.png");
+    // scene.generate_image(W, H, "lab4.png");
 
-    scene.generate_gif(W, H, cat, "cat_gif");
+    scene.generate_gif(W, H, cat, "cat_gif_new");
 
     return 0;
 }

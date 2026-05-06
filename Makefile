@@ -1,5 +1,5 @@
 CXX = g++
-CXXFLAGS = -O3 -Wall -Wextra -I. -fopenmp -ffast-math -std=c++11
+CXXFLAGS = -O3 -Wall -Wextra -I. -fopenmp -ffast-math -std=c++17
 
 SRCS = $(wildcard *.cpp) $(wildcard *.c)
 
