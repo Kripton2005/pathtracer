@@ -1,3 +1,4 @@
+#include <memory>
 #define _CRT_SECURE_NO_WARNINGS 1
 #include <cmath>
 #include <cstring>
@@ -78,6 +79,32 @@ class Matrix {
     Vector data[3];
 };
 
+Matrix create_rotation_matrix(Vector k,
+                              double theta) { // theta in radians pls
+    k.normalize();                            // the axis must be a unit vector
+
+    double c = cos(theta);
+    double s = sin(theta);
+
+    double k_x = k[0], k_y = k[1], k_z = k[2];
+
+    // reference: Rodrigues rotation formula Wikipedia right at the end
+    Matrix m;
+    m[0][0] = c + (1 - c) * k_x * k_x;
+    m[0][1] = (1 - c) * k_x * k_y - s * k_z;
+    m[0][2] = (1 - c) * k_x * k_z + s * k_y;
+
+    m[1][0] = (1 - c) * k_x * k_y + s * k_z;
+    m[1][1] = c + (1 - c) * k_y * k_y;
+    m[1][2] = (1 - c) * k_y * k_z - s * k_x;
+
+    m[2][0] = (1 - c) * k_x * k_z - s * k_y;
+    m[2][1] = (1 - c) * k_y * k_z + s * k_x;
+    m[2][2] = c + (1 - c) * k_z * k_z;
+
+    return m;
+}
+
 Vector operator*(const Matrix &a, const Vector &b) {
     return Vector(dot(a[0], b), dot(a[1], b), dot(a[2], b));
 }
@@ -93,18 +120,25 @@ class Ray {
 class Object {
   public:
     Object(const Vector &albedo, bool mirror = false, bool transparent = false,
-           bool is_light = false, double n = 1.5) // by default glass
+           bool is_light = false, double n = 1.5,
+           bool invert_normals = false) // by default glass
         : albedo(albedo), mirror(mirror), transparent(transparent),
-          is_light(is_light), n(n){};
+          is_light(is_light), n(n), invert_normals(invert_normals){};
 
+    virtual Object *clone() const = 0;
     virtual bool intersect(const Ray &ray, Vector &P, double &t,
                            Vector &N) const = 0;
     virtual void scale_translate(double s, const Vector &t) = 0;
     virtual void rotate(const Matrix &m) = 0;
+    virtual void compute_centroid() = 0;
+    virtual void compute_bounding_box() = 0;
 
     Vector albedo, velocity = Vector(0, 0, 0);
     bool mirror, transparent, is_light;
     double n;
+    bool invert_normals;
+    Vector B_min, B_max;
+    Vector centroid{0, 0, 0};
 };
 
 class Sphere : public Object {
@@ -112,14 +146,16 @@ class Sphere : public Object {
     Sphere(const Vector &center, double radius, const Vector &albedo,
            bool mirror = false, bool transparent = false, bool is_light = false,
            double n = 1.5, bool invert_normals = false)
-        : ::Object(albedo, mirror, transparent, is_light, n), C(center),
-          R(radius), invert_normals(invert_normals){};
+        : ::Object(albedo, mirror, transparent, is_light, n, invert_normals),
+          C(center), R(radius){};
 
+    Sphere *clone() const override { return new Sphere(*this); }
     // returns true iif there is an intersection between the ray and the sphere
     // if there is an intersection, also computes the point of intersection P,
     // t>=0 the distance between the ray origin and P (i.e., the parameter along
     // the ray) and the unit normal N
-    bool intersect(const Ray &ray, Vector &P, double &t, Vector &N) const {
+    bool intersect(const Ray &ray, Vector &P, double &t,
+                   Vector &N) const override {
         Vector real_C = C + velocity * ray.time;
         double delta = sqr(dot(ray.u, ray.O - real_C)) -
                        ((ray.O - real_C).norm2() - sqr(R));
@@ -142,16 +178,20 @@ class Sphere : public Object {
             N = N * -1.0;
         return true;
     }
-    void scale_translate(double s, const Vector &t) {
+    void scale_translate(double s, const Vector &t) override {
         C = C + t;
         R *= s;
     }
-    void rotate(const Matrix &) {
+    void rotate(const Matrix &) override {
         return; // sphere doesn't do anything when rotated
+    }
+    void compute_centroid() override { centroid = C; }
+    void compute_bounding_box() override {
+        B_max = C + R * Vector(1, 1, 1);
+        B_min = C - R * Vector(1, 1, 1);
     }
     Vector C;
     double R;
-    bool invert_normals;
 };
 
 // Class only used in labs 3 and 4
@@ -181,11 +221,13 @@ class TriangleIndices {
 class TriangleMesh : public Object {
   public:
     TriangleMesh(const Vector &albedo, bool mirror = false,
-                 bool transparent = false)
-        : ::Object(albedo, mirror, transparent){};
+                 bool transparent = false, bool is_light = false,
+                 double n = 1.5, bool invert_normals = false)
+        : ::Object(albedo, mirror, transparent, is_light, n, invert_normals){};
 
+    TriangleMesh *clone() const override { return new TriangleMesh(*this); }
     // first scale and then translate the current object
-    void scale_translate(double s, const Vector &t) {
+    void scale_translate(double s, const Vector &t) override {
         for (size_t i = 0; i < vertices.size(); i++) {
             vertices[i] = vertices[i] * s + t;
         }
@@ -325,7 +367,7 @@ class TriangleMesh : public Object {
         }
     }
 
-    void compute_bounding_box() {
+    void compute_bounding_box() override {
         B_min = std::numeric_limits<double>::max() * Vector(1.0, 1.0, 1.0);
         B_max = -1 * B_min;
         for (auto vertex : vertices) {
@@ -337,7 +379,7 @@ class TriangleMesh : public Object {
             B_min[2] = std::min(B_min[2], vertex[2]);
         }
     }
-    void compute_centroid() {
+    void compute_centroid() override {
         // computes centroid weighted by triangle area
         Vector sum_midpoints(0, 0, 0);
         double total_area = 0.0;
@@ -365,7 +407,8 @@ class TriangleMesh : public Object {
     }
 
     // TODO ray-mesh intersection (labs 3 and 4)
-    bool intersect(const Ray &ray, Vector &P, double &t, Vector &N) const {
+    bool intersect(const Ray &ray, Vector &P, double &t,
+                   Vector &N) const override {
 
         // lab 3 : for each triangle, compute the ray-triangle intersection with
         // Moller-Trumbore algorithm lab 3 : once done, speed it up by first
@@ -404,21 +447,31 @@ class TriangleMesh : public Object {
             double gamma =
                 -dot(e1, cross(A - ray.O, ray.u)) / dot(ray.u, N_prime);
             double alfa = 1 - beta - gamma;
-            if (-eps < t_prime && t_prime < t &&
+            if (eps < t_prime && t_prime < t &&
                 -eps < std::min(alfa, std::min(beta, gamma)) &&
                 std::max(alfa, std::max(beta, gamma)) < 1 + eps) {
                 found = true;
                 t = t_prime;
                 N = N_prime;
+                // smoothen the object
+                Vector normal_A = normals[triangle.n[0]];
+                Vector normal_B = normals[triangle.n[1]];
+                Vector normal_C = normals[triangle.n[2]];
+                N = alfa * normal_A + beta * normal_B + gamma * normal_C;
+                // can be deleted
                 N.normalize();
+                if (dot(ray.u, N) > 0) {
+                    N = -1 * N;
+                }
                 P = alfa * A + beta * B + gamma * C;
             }
         }
-
+        if (invert_normals)
+            N = N * -1.0;
         return found;
     }
 
-    void rotate(const Matrix &m) {
+    void rotate(const Matrix &m) override {
         for (auto &vertex : vertices) {
             vertex = vertex - centroid;
             vertex = m * vertex;
@@ -435,8 +488,6 @@ class TriangleMesh : public Object {
     std::vector<Vector> normals;
     std::vector<Vector> uvs;
     std::vector<Vector> vertexcolors;
-    Vector B_min, B_max;
-    Vector centroid{0, 0, 0};
 };
 
 class Scene {
@@ -634,6 +685,147 @@ class Scene {
         return Vector(0, 0, 0);
     }
 
+    void generate_image(int W, int H, const char *target) {
+        std::vector<unsigned char> image(W * H * 3, 0);
+
+        int N = 16;
+        double sigma = 0.5;
+
+#pragma omp parallel for schedule(dynamic, 1)
+        for (int i = 0; i < H; i++) {
+            for (int j = 0; j < W; j++) {
+                double miu_x = j - W / 2.0 + 0.5;
+                double miu_y = H / 2.0 - i - 0.5;
+                double miu_z = -W / (2 * tan(fov / 2));
+
+                // (lab 2) : add Monte Carlo / averaging of random ray
+                // contributions here
+                // (lab 2) : add antialiasing by altering the ray_direction
+                // here
+                // (lab 2) : add depth of field effect by altering the ray
+                // origin (and direction) here
+                Vector color(0, 0, 0);
+                int tid = omp_get_thread_num();
+                for (int l = 0; l < N; l++) {
+                    double r1 = uniform(engine[tid]);
+                    if (r1 < eps)
+                        r1 = eps;
+                    double r2 = uniform(engine[tid]);
+
+                    Vector ray_direction = Vector(
+                        miu_x + sigma * sqrt(-2 * log(r1)) * cos(2 * M_PI * r2),
+                        miu_y + sigma * sqrt(-2 * log(r1)) * sin(2 * M_PI * r2),
+                        miu_z);
+                    ray_direction.normalize();
+
+                    // depth of field
+                    double t_focal =
+                        focal_distance / std::abs(ray_direction[2]);
+                    Vector focal_point =
+                        camera_center +
+                        ray_direction * t_focal; // the point on the focal plane
+                                                 // that this ray hits
+
+                    double r_lens = uniform(engine[tid]);
+                    double theta_lens = uniform(engine[tid]) * 2 * M_PI;
+                    double dx = lens_radius * sqrt(r_lens) * cos(theta_lens);
+                    double dy = lens_radius * sqrt(r_lens) * sin(theta_lens);
+
+                    // we shoot a ray from a random point on the lens
+                    Vector new_origin = camera_center + Vector(dx, dy, 0);
+                    Vector final_dir = focal_point - new_origin;
+                    final_dir.normalize();
+
+                    color = color + getColor(Ray(new_origin, final_dir,
+                                                 uniform(engine[tid]) *
+                                                     camera_shutter_time),
+                                             0);
+                }
+                color = color / N;
+
+                image[(i * W + j) * 3 + 0] = std::min(
+                    255.,
+                    std::max(0., 255. * std::pow(color[0] / 255., 1. / gamma)));
+                image[(i * W + j) * 3 + 1] = std::min(
+                    255.,
+                    std::max(0., 255. * std::pow(color[1] / 255., 1. / gamma)));
+                image[(i * W + j) * 3 + 2] = std::min(
+                    255.,
+                    std::max(0., 255. * std::pow(color[2] / 255., 1. / gamma)));
+            }
+        }
+        stbi_write_png(target, W, H, 3, &image[0], 0);
+    }
+
+    void _rotate_generate_gif(int W, int H, Object &obj, int rot, Vector axis,
+                              int frame_nb, int &total_frames,
+                              const char *folder) {
+
+        for (int frame = total_frames; frame < total_frames + frame_nb;
+             frame++) {
+            Matrix m = create_rotation_matrix(
+                axis,
+                rot * 2 * M_PI * frame /
+                    frame_nb); // rot full rotations around axis
+
+            // I'm doing it every time because I don't want the errors when I
+            // rotate multiple times in a row, I just do one big rotation, the
+            // time complexity doesn't come from here anyway
+            std::unique_ptr<Object> obj_cur(obj.clone());
+            obj_cur->compute_centroid();
+            obj_cur->rotate(m);
+            obj_cur->compute_bounding_box();
+
+            addObject(obj_cur.get());
+
+            char filename[256];
+            snprintf(filename, sizeof(filename), "%s/frame_%03d.png", folder,
+                     frame);
+
+            generate_image(W, H, filename);
+
+            removeObject(obj_cur.get());
+        }
+        total_frames += frame_nb;
+    }
+
+    void _move_generate_gif(int W, int H, Object &obj, Vector translation,
+                            int frame_nb, int &total_frames,
+                            const char *folder) {
+        // move it top right
+        for (int frame = total_frames; frame < total_frames + frame_nb;
+             frame++) {
+
+            std::unique_ptr<Object> obj_cur(obj.clone());
+            obj_cur->scale_translate(1.0, translation * (frame - frame_nb) /
+                                              frame_nb);
+            obj_cur->compute_bounding_box();
+
+            addObject(obj_cur.get());
+
+            char filename[256];
+            snprintf(filename, sizeof(filename), "%s/frame_%03d.png", folder,
+                     frame);
+
+            generate_image(W, H, filename);
+
+            removeObject(obj_cur.get());
+        }
+        total_frames += frame_nb;
+    }
+    void generate_gif(int W, int H, Object &obj, const char *folder) {
+        int total_frames = 0;
+        constexpr int frame_nb = 24;
+        _rotate_generate_gif(W, H, obj, 4, Vector(0, 1, 0), frame_nb,
+                             total_frames, folder);
+        Vector translation{25, 25, -30};
+        _move_generate_gif(W, H, obj, translation, frame_nb, total_frames,
+                           folder);
+        obj.scale_translate(1.0, translation);
+        _rotate_generate_gif(W, H, obj, 4, Vector(1, 0, 0), frame_nb,
+                             total_frames, folder);
+    }
+
     std::vector<const Object *> objects;
 
     Vector camera_center, light_position;
@@ -642,106 +834,6 @@ class Scene {
     double fov, gamma, light_intensity;
     int max_light_bounce;
 };
-
-Matrix create_rotation_matrix(Vector v1, Vector v2,
-                              double theta) { // theta in radians pls
-    Vector k = cross(v1, v2);
-    k.normalize(); // the axis must be a unit vector
-
-    double c = cos(theta);
-    double s = sin(theta);
-
-    double k_x = k[0], k_y = k[1], k_z = k[2];
-
-    // reference: Rodrigues rotation formula Wikipedia right at the end
-    Matrix m;
-    m[0][0] = c + (1 - c) * k_x * k_x;
-    m[0][1] = (1 - c) * k_x * k_y - s * k_z;
-    m[0][2] = (1 - c) * k_x * k_z + s * k_y;
-
-    m[1][0] = (1 - c) * k_x * k_y + s * k_z;
-    m[1][1] = c + (1 - c) * k_y * k_y;
-    m[1][2] = (1 - c) * k_y * k_z - s * k_x;
-
-    m[2][0] = (1 - c) * k_x * k_z - s * k_y;
-    m[2][1] = (1 - c) * k_y * k_z + s * k_x;
-    m[2][2] = c + (1 - c) * k_z * k_z;
-
-    return m;
-}
-
-void generate_image(Scene &scene, int W, int H, const char *target) {
-    std::vector<unsigned char> image(W * H * 3, 0);
-
-    int N = 16;
-    double sigma = 0.5;
-
-#pragma omp parallel for schedule(dynamic, 1)
-    for (int i = 0; i < H; i++) {
-        for (int j = 0; j < W; j++) {
-            double miu_x = j - W / 2.0 + 0.5;
-            double miu_y = H / 2.0 - i - 0.5;
-            double miu_z = -W / (2 * tan(scene.fov / 2));
-
-            // (lab 2) : add Monte Carlo / averaging of random ray
-            // contributions here
-            // (lab 2) : add antialiasing by altering the ray_direction
-            // here
-            // (lab 2) : add depth of field effect by altering the ray
-            // origin (and direction) here
-            Vector color(0, 0, 0);
-            int tid = omp_get_thread_num();
-            for (int l = 0; l < N; l++) {
-                double r1 = uniform(engine[tid]);
-                if (r1 < eps)
-                    r1 = eps;
-                double r2 = uniform(engine[tid]);
-
-                Vector ray_direction = Vector(
-                    miu_x + sigma * sqrt(-2 * log(r1)) * cos(2 * M_PI * r2),
-                    miu_y + sigma * sqrt(-2 * log(r1)) * sin(2 * M_PI * r2),
-                    miu_z);
-                ray_direction.normalize();
-
-                // depth of field
-                double t_focal =
-                    scene.focal_distance / std::abs(ray_direction[2]);
-                Vector focal_point =
-                    scene.camera_center +
-                    ray_direction * t_focal; // the point on the focal plane
-                                             // that this ray hits
-
-                double r_lens = uniform(engine[tid]);
-                double theta_lens = uniform(engine[tid]) * 2 * M_PI;
-                double dx = scene.lens_radius * sqrt(r_lens) * cos(theta_lens);
-                double dy = scene.lens_radius * sqrt(r_lens) * sin(theta_lens);
-
-                // we shoot a ray from a random point on the lens
-                Vector new_origin = scene.camera_center + Vector(dx, dy, 0);
-                Vector final_dir = focal_point - new_origin;
-                final_dir.normalize();
-
-                color =
-                    color + scene.getColor(Ray(new_origin, final_dir,
-                                               uniform(engine[tid]) *
-                                                   scene.camera_shutter_time),
-                                           0);
-            }
-            color = color / N;
-
-            image[(i * W + j) * 3 + 0] =
-                std::min(255., std::max(0., 255. * std::pow(color[0] / 255.,
-                                                            1. / scene.gamma)));
-            image[(i * W + j) * 3 + 1] =
-                std::min(255., std::max(0., 255. * std::pow(color[1] / 255.,
-                                                            1. / scene.gamma)));
-            image[(i * W + j) * 3 + 2] =
-                std::min(255., std::max(0., 255. * std::pow(color[2] / 255.,
-                                                            1. / scene.gamma)));
-        }
-    }
-    stbi_write_png(target, W, H, 3, &image[0], 0);
-}
 
 int main() {
     int W = 512;
@@ -818,75 +910,7 @@ int main() {
 
     // generate_image(scene, W, H, "lab3.png");
 
-    int frame_nb = 48;
-
-    // rotate it
-    for (int frame = 0; frame < frame_nb; frame++) {
-        Matrix m = create_rotation_matrix(
-            Vector(1, 0, 0), Vector(0, 0, 1),
-            8 * M_PI * frame / frame_nb); // 4 full rotations around y
-
-        // I'm doing it every time because I don't want the errors when I rotate
-        // multiple times in a row, I just do one big rotation, the time
-        // complexity doesn't come from here anyway
-        TriangleMesh cat_cur = cat;
-        cat_cur.compute_centroid();
-        cat_cur.rotate(m);
-        cat_cur.compute_bounding_box();
-
-        scene.addObject(&cat_cur);
-
-        char filename[256];
-        snprintf(filename, sizeof(filename), "cat_gif/frame_%03d.png", frame);
-
-        generate_image(scene, W, H, filename);
-
-        scene.removeObject(&cat_cur);
-    }
-
-    // move it top right
-    Vector translation{25, 25, -30};
-    for (int frame = frame_nb; frame < 2 * frame_nb; frame++) {
-
-        TriangleMesh cat_cur = cat;
-
-        cat_cur.scale_translate(1.0,
-                                translation * (frame - frame_nb) / frame_nb);
-        cat_cur.compute_bounding_box();
-
-        scene.addObject(&cat_cur);
-
-        char filename[256];
-        snprintf(filename, sizeof(filename), "cat_gif/frame_%03d.png", frame);
-
-        generate_image(scene, W, H, filename);
-
-        scene.removeObject(&cat_cur);
-    }
-
-    cat.scale_translate(1.0, translation);
-
-    // rotate again
-    for (int frame = 2 * frame_nb; frame < 3 * frame_nb; frame++) {
-        Matrix m = create_rotation_matrix(
-            Vector(0, 1, 0), Vector(0, 0, 1),
-            8 * M_PI * frame / frame_nb); // 4 full rotations around x
-
-        TriangleMesh cat_cur = cat;
-
-        cat_cur.compute_centroid();
-        cat_cur.rotate(m);
-        cat_cur.compute_bounding_box();
-
-        scene.addObject(&cat_cur);
-
-        char filename[256];
-        snprintf(filename, sizeof(filename), "cat_gif/frame_%03d.png", frame);
-
-        generate_image(scene, W, H, filename);
-
-        scene.removeObject(&cat_cur);
-    }
+    scene.generate_gif(W, H, cat, "cat_gif");
 
     return 0;
 }
