@@ -164,7 +164,7 @@ class Object {
                 std::swap(tz_min, tz_max);
             double t_min = std::max(tx_min, std::max(ty_min, tz_min));
             double t_max = std::min(tx_max, std::min(ty_max, tz_max));
-            if (t_min > t_max + eps)
+            if (t_max < 0 || t_min > t_max)
                 return false;
             t = t_min;
             return true;
@@ -278,9 +278,18 @@ class TriangleMesh : public Object {
             node.bbox.max = node.bbox.max * s + t;
         }
     }
+    void center_scale_translate(double s, const Vector &t) {
+        compute_centroid();
+        for (auto &vertex : vertices) {
+            vertex = (vertex - centroid) * s + t;
+        }
+        compute_centroid();
+        compute_bounding_box();
+        build_BVH();
+    }
 
     // read an .obj file
-    void readOBJ(const char *obj) {
+    void readOBJ(const char *obj, bool flip_uvs = false) {
         std::ifstream f(obj);
         if (!f)
             return;
@@ -334,6 +343,8 @@ class TriangleMesh : public Object {
             } else if (line.rfind("vt ", 0) == 0) {
                 Vector v;
                 sscanf(s, "vt %lf %lf", &v[0], &v[1]);
+                if (flip_uvs)
+                    v[1] = 1 - v[1];
                 uvs.push_back(v);
             } else if (line.rfind("v ", 0) == 0) {
                 Vector pos, col;
@@ -411,9 +422,7 @@ class TriangleMesh : public Object {
                 }
             }
         }
-        compute_bounding_box();
-        compute_centroid();
-        build_BVH();
+        center_scale_translate(1.0, Vector(0, 0, 0));
     }
 
     void update_bbox(BBox &bbox, Vector &vertex) {
@@ -518,8 +527,6 @@ class TriangleMesh : public Object {
                     if (eps < t_prime && t_prime < t &&
                         -eps < std::min(alfa, std::min(beta, gamma)) &&
                         std::max(alfa, std::max(beta, gamma)) < 1 + eps) {
-                        found = true;
-                        t = t_prime;
                         N = N_prime;
                         // smoothen the object
                         Vector normal_A = normals[triangle.n[0]];
@@ -544,17 +551,19 @@ class TriangleMesh : public Object {
                             // make them modulo 1 - just the fractional part
                             double u = uv_P[0] - std::floor(uv_P[0]);
                             double v = uv_P[1] - std::floor(uv_P[1]);
-                            v = 1 -
-                                v; // since it's top-left instead of bottom-left
                             Texture texture = textures[triangle.group];
                             int x = (int)(u * texture.W);
                             int y = (int)(v * texture.H);
                             x = std::max(0, std::min(texture.W - 1, x));
                             y = std::max(0,
                                          std::min(texture.H - 1, y)); // safety
-                            int idx = ((y * texture.W) + x) * 3;
-                            // *3 because every pixel has 3 channels for colour
-                            // (RGB)
+                            int idx = ((y * texture.W) + x) *
+                                      texture.C; // texture has .C channels i.e.
+                                                 // .C entries for every pixel
+                            if (texture.C >= 4 && texture.data[idx + 3] < 128) {
+                                continue; // this point is more transparent than
+                                          // opaque
+                            }
                             albedo = Vector(
                                 std::pow(texture.data[idx] / 255.0, 2.2),
                                 std::pow(texture.data[idx + 1] / 255.0, 2.2),
@@ -564,6 +573,8 @@ class TriangleMesh : public Object {
                         } else {
                             albedo = this->albedo;
                         }
+                        found = true;
+                        t = t_prime;
                     }
                 }
             }
@@ -590,9 +601,10 @@ class TriangleMesh : public Object {
     void add_textures(
         const char *filename) { // IMPORTANT: add textures in the correct order
         int w, h, c;
-        unsigned char *data = stbi_load(filename, &w, &h, &c, 3);
+        stbi_set_flip_vertically_on_load(true); // to not need v = 1 - v
+        unsigned char *data = stbi_load(filename, &w, &h, &c, 4);
         if (data) {
-            textures.push_back({data, w, h});
+            textures.push_back({data, w, h, 4});
         }
     }
 
@@ -653,7 +665,7 @@ class TriangleMesh : public Object {
     // texture things
     struct Texture {
         unsigned char *data;
-        int W, H; // texture resolution
+        int W, H, C; // texture resolution and nb of channels
     };
     std::vector<Texture> textures;
 
@@ -997,13 +1009,12 @@ class Scene {
         std::filesystem::create_directories(folder);
         int total_frames = 0;
         constexpr int frame_nb = 24;
-        _rotate_generate_gif(W, H, obj, 4, Vector(0, 1, 0), frame_nb,
+        _rotate_generate_gif(W, H, obj, 2, Vector(0, 1, 0), frame_nb,
                              total_frames, folder);
-        Vector translation{25, 25, -30};
-        _move_generate_gif(W, H, obj, translation, frame_nb, total_frames,
-                           folder);
+        Vector translation{7, 7, -10};
+        _move_generate_gif(W, H, obj, translation, 48, total_frames, folder);
         obj.scale_translate(1.0, translation);
-        _rotate_generate_gif(W, H, obj, 4, Vector(1, 0, 0), frame_nb,
+        _rotate_generate_gif(W, H, obj, 2, Vector(0, 1, 0), frame_nb,
                              total_frames, folder);
     }
 
@@ -1052,9 +1063,14 @@ int main() {
     Sphere floor(Vector(0, -1000, 0), 990, Vector(0.2, 0.3, 0.8));
 
     TriangleMesh cat(Vector(1.0, 0.85, 0.1));
-    cat.readOBJ("cat/Models_F0202A090/cat.obj");
-    cat.scale_translate(0.5, Vector(0.0, -5.0, 0.0));
-    cat.add_textures("cat/Models_F0202A090/cat_diff.png"); // textured car!
+    // cat.readOBJ("cat/Models_F0202A090/cat.obj");
+    // cat.scale_translate(0.5, Vector(0, 0, 0));
+    // cat.add_textures("cat/Models_F0202A090/cat_diff.png"); // textured car!
+
+    cat.readOBJ("maxwell_cat/dingus.obj", true);
+    cat.scale_translate(0.01, Vector(0, 0, 0));
+    cat.add_textures("maxwell_cat/dingus_nowhiskers.jpg");
+    cat.add_textures("maxwell_cat/dingus_whiskers.tga.png"); // textured car!
     Matrix m = create_rotation_matrix(Vector(0, 1, 0), -M_PI / 4);
     cat.rotate(m);
 
@@ -1083,7 +1099,7 @@ int main() {
     // scene.addObject(&right_sphere_outer);
     // scene.addObject(&right_sphere_inner); // ADDITION: the trick
 
-    // scene.addObject(&cat);
+    scene.addObject(&cat);
 
     scene.addObject(&wall_left);
     scene.addObject(&wall_right);
@@ -1092,9 +1108,11 @@ int main() {
     scene.addObject(&ceiling);
     scene.addObject(&floor);
 
-    // scene.generate_image(W, H, "lab4.png");
+    std::vector<unsigned char> image(W * H * 3, 0);
+    scene.generate_image(W, H, image);
+    stbi_write_png("lab4.png", W, H, 3, &image[0], 0);
 
-    scene.generate_gif(W, H, cat, "cat_gif_new");
+    // scene.generate_gif(W, H, cat, "cat_gif_new");
 
     return 0;
 }
