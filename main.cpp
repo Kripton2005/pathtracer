@@ -517,12 +517,13 @@ class TriangleMesh : public Object {
                     Vector e1 = B - A;
                     Vector e2 = C - A;
                     Vector N_prime = cross(e1, e2);
-                    double t_prime =
-                        dot(A - ray.O, N_prime) / dot(ray.u, N_prime);
-                    double beta =
-                        dot(e2, cross(A - ray.O, ray.u)) / dot(ray.u, N_prime);
-                    double gamma =
-                        -dot(e1, cross(A - ray.O, ray.u)) / dot(ray.u, N_prime);
+                    double ray_dot_N = dot(ray.u, N_prime);
+                    if (abs(ray_dot_N) < eps) // ray tangential to object
+                        continue;
+                    Vector A_cross_ray = cross(A - ray.O, ray.u);
+                    double t_prime = dot(A - ray.O, N_prime) / ray_dot_N;
+                    double beta = dot(e2, A_cross_ray) / ray_dot_N;
+                    double gamma = -dot(e1, A_cross_ray) / ray_dot_N;
                     double alfa = 1 - beta - gamma;
                     if (eps < t_prime && t_prime < t &&
                         -eps < std::min(alfa, std::min(beta, gamma)) &&
@@ -1064,7 +1065,7 @@ int main() {
 
     TriangleMesh cat(Vector(1.0, 1.0, 1.0));
     cat.readOBJ("cat/Models_F0202A090/cat.obj");
-    cat.scale_translate(0.5, Vector(0, 0, 0));
+    cat.scale_translate(0.6, Vector(0, 0, 0));
     // cat.add_textures("cat/Models_F0202A090/cat_diff.png"); // textured car!
 
     // cat.readOBJ("maxwell_cat/dingus.obj", true);
