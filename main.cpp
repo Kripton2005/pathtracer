@@ -10,8 +10,8 @@
 #include <random>
 #include <vector>
 
-#include <stb/stb_image.h>
-#include <stb/stb_image_write.h>
+#include "stb/stb_image.h"
+#include "stb/stb_image_write.h"
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323856
@@ -529,11 +529,11 @@ class TriangleMesh : public Object {
                         std::max(alfa, std::max(beta, gamma)) < 1 + eps) {
                         N = N_prime;
                         // smoothen the object
-                        Vector normal_A = normals[triangle.n[0]];
+                        /*Vector normal_A = normals[triangle.n[0]];
                         Vector normal_B = normals[triangle.n[1]];
                         Vector normal_C = normals[triangle.n[2]];
                         N = alfa * normal_A + beta * normal_B +
-                            gamma * normal_C;
+                            gamma * normal_C;*/
                         // can be deleted
                         N.normalize();
                         if (dot(ray.u, N) > 0) {
@@ -877,9 +877,8 @@ class Scene {
         return Vector(0, 0, 0);
     }
 
-    void generate_image(int W, int H, std::vector<unsigned char> &image) {
-        int N = 200;
-        double sigma = 0.5;
+    void generate_image(int W, int H, std::vector<unsigned char> &image,
+                        int N = 200, double sigma = 0.5) {
 
 #pragma omp parallel for schedule(dynamic, 1)
         for (int i = 0; i < H; i++) {
@@ -967,7 +966,7 @@ class Scene {
             addObject(obj_cur.get());
 
             std::vector<unsigned char> image(W * H * 3, 0);
-            generate_image(W, H, image);
+            generate_image(W, H, image, 64);
 
             for (int j = 0; j < rot; j++) {
                 char filename[256];
@@ -998,7 +997,7 @@ class Scene {
                      total_frames + frame);
 
             std::vector<unsigned char> image(W * H * 3, 0);
-            generate_image(W, H, image);
+            generate_image(W, H, image, 64);
             stbi_write_png(filename, W, H, 3, &image[0], 0);
 
             removeObject(obj_cur.get());
@@ -1008,13 +1007,14 @@ class Scene {
     void generate_gif(int W, int H, Object &obj, const char *folder) {
         std::filesystem::create_directories(folder);
         int total_frames = 0;
-        constexpr int frame_nb = 24;
-        _rotate_generate_gif(W, H, obj, 2, Vector(0, 1, 0), frame_nb,
+        constexpr int frame_nb = 48;
+        _rotate_generate_gif(W, H, obj, 6, Vector(0, 1, 0), frame_nb,
                              total_frames, folder);
         Vector translation{7, 7, -10};
-        _move_generate_gif(W, H, obj, translation, 48, total_frames, folder);
+        _move_generate_gif(W, H, obj, translation, frame_nb, total_frames,
+                           folder);
         obj.scale_translate(1.0, translation);
-        _rotate_generate_gif(W, H, obj, 2, Vector(0, 1, 0), frame_nb,
+        _rotate_generate_gif(W, H, obj, 6, Vector(0, 1, 0), frame_nb,
                              total_frames, folder);
     }
 
@@ -1062,17 +1062,17 @@ int main() {
     Sphere ceiling(Vector(0, 1000, 0), 940, Vector(0.3, 0.5, 0.8));
     Sphere floor(Vector(0, -1000, 0), 990, Vector(0.2, 0.3, 0.8));
 
-    TriangleMesh cat(Vector(1.0, 0.85, 0.1));
-    // cat.readOBJ("cat/Models_F0202A090/cat.obj");
-    // cat.scale_translate(0.5, Vector(0, 0, 0));
+    TriangleMesh cat(Vector(1.0, 1.0, 1.0));
+    cat.readOBJ("cat/Models_F0202A090/cat.obj");
+    cat.scale_translate(0.5, Vector(0, 0, 0));
     // cat.add_textures("cat/Models_F0202A090/cat_diff.png"); // textured car!
 
-    cat.readOBJ("maxwell_cat/dingus.obj", true);
-    cat.scale_translate(0.01, Vector(0, 0, 0));
-    cat.add_textures("maxwell_cat/dingus_nowhiskers.jpg");
-    cat.add_textures("maxwell_cat/dingus_whiskers.tga.png"); // textured car!
-    Matrix m = create_rotation_matrix(Vector(0, 1, 0), -M_PI / 4);
-    cat.rotate(m);
+    // cat.readOBJ("maxwell_cat/dingus.obj", true);
+    // cat.scale_translate(0.01, Vector(0, 0, 0));
+    // cat.add_textures("maxwell_cat/dingus_nowhiskers.jpg");
+    // cat.add_textures("maxwell_cat/dingus_whiskers.tga.png"); // textured car!
+    // Matrix m = create_rotation_matrix(Vector(0, 1, 0), -M_PI / 4);
+    // cat.rotate(m);
 
     Scene scene;
     scene.camera_center = Vector(0, 0, 55);
@@ -1080,14 +1080,14 @@ int main() {
     // scene.light_radius = 5.0;
     scene.light_intensity = 1E7;
     scene.focal_distance = 55.0;
-    scene.lens_radius = 0.3;
+    scene.lens_radius = 0;
     scene.camera_shutter_time =
         1.00 / 48; // from the cinematographic shutter formula on the shutter
                    // speed Wikipedia
 
     scene.fov = 60 * M_PI / 180.;
     scene.gamma = 2.2;
-    scene.max_light_bounce = 2;
+    scene.max_light_bounce = 5;
 
     // Sphere light_sphere(scene.light_position, scene.light_radius,
     //                     Vector(1.0, 1.0, 1.0), false, false, true);
@@ -1106,11 +1106,11 @@ int main() {
     scene.addObject(&wall_front);
     scene.addObject(&wall_behind);
     scene.addObject(&ceiling);
-    scene.addObject(&floor);
+    // scene.addObject(&floor);
 
     std::vector<unsigned char> image(W * H * 3, 0);
-    scene.generate_image(W, H, image);
-    stbi_write_png("lab4.png", W, H, 3, &image[0], 0);
+    scene.generate_image(W, H, image, 64);
+    stbi_write_png("whole_project.png", W, H, 3, &image[0], 0);
 
     // scene.generate_gif(W, H, cat, "cat_gif_new");
 
